@@ -44,8 +44,10 @@ import {
 } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
 import {
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -90,6 +92,8 @@ import {
   diffViewDisplayModeAtom,
   filteredDiffFilesAtom,
   filteredSubChatIdAtom,
+  isCreatingPrAtom,
+  selectedDiffFilePathAtom,
   isPlanModeAtom,
   justCreatedIdsAtom,
   lastSelectedModelIdAtom,
@@ -131,7 +135,8 @@ import {
   toQueuedTextContext,
 } from "../lib/queue-utils"
 import {
-  type AgentsMentionsEditorHandle
+  type AgentsMentionsEditorHandle,
+  MENTION_PREFIXES,
 } from "../mentions"
 import {
   ChatSearchBar,
@@ -158,13 +163,15 @@ import { AgentQueueIndicator } from "../ui/agent-queue-indicator"
 import { AgentToolCall } from "../ui/agent-tool-call"
 import { AgentToolRegistry } from "../ui/agent-tool-registry"
 import { AgentUserMessageBubble } from "../ui/agent-user-message-bubble"
-import { AgentUserQuestion } from "../ui/agent-user-question"
+import { AgentUserQuestion, type AgentUserQuestionHandle } from "../ui/agent-user-question"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
 import { ChatTitleEditor } from "../ui/chat-title-editor"
 import { MobileChatHeader } from "../ui/mobile-chat-header"
 import { SubChatSelector } from "../ui/sub-chat-selector"
 import { SubChatStatusCard } from "../ui/sub-chat-status-card"
 import { TextSelectionPopover } from "../ui/text-selection-popover"
+import { QuickCommentInput } from "../ui/quick-comment-input"
+import type { TextSelectionSource } from "../context/text-selection-context"
 import { autoRenameAgentChat } from "../utils/auto-rename"
 import { generateCommitToPrMessage, generatePrMessage, generateReviewMessage } from "../utils/pr-message"
 import { ChatInputArea } from "./chat-input-area"
@@ -176,6 +183,13 @@ const selectedSubChatIdsAtom = atom(new Set<string>())
 const selectedTeamIdAtom = atom<string | null>(null)
 // import type { PlanType } from "@/lib/config/subscription-plans"
 type PlanType = string
+
+// UTF-8 safe base64 encoding (btoa doesn't support Unicode)
+function utf8ToBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str)
+  const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join("")
+  return btoa(binString)
+}
 
 // Exploring tools - these get grouped when 2+ consecutive
 const EXPLORING_TOOLS = new Set([
@@ -910,6 +924,29 @@ function CollapsibleSteps({
   )
 }
 
+// ============================================================================
+// DiffStateContext - isolates diff state management to prevent ChatView re-renders
+// ============================================================================
+
+interface DiffStateContextValue {
+  selectedFilePath: string | null
+  filteredSubChatId: string | null
+  viewedCount: number
+  handleDiffFileSelect: (file: { path: string }, category: string) => void
+  handleSelectNextFile: (filePath: string) => void
+  handleCommitSuccess: () => void
+  handleCloseDiff: () => void
+  handleViewedCountChange: (count: number) => void
+}
+
+const DiffStateContext = createContext<DiffStateContextValue | null>(null)
+
+function useDiffState() {
+  const ctx = useContext(DiffStateContext)
+  if (!ctx) throw new Error('useDiffState must be used within DiffStateProvider')
+  return ctx
+}
+
 // Diff sidebar content component with responsive layout
 interface DiffSidebarContentProps {
   worktreePath: string | null
@@ -924,7 +961,7 @@ interface DiffSidebarContentProps {
   parsedFileDiffs: unknown
   prefetchedFileContents: Record<string, string> | undefined
   setDiffCollapseState: (state: Map<string, boolean>) => void
-  diffViewRef: React.RefObject<{ expandAll: () => void; collapseAll: () => void } | null>
+  diffViewRef: React.RefObject<{ expandAll: () => void; collapseAll: () => void; getViewedCount: () => number; markAllViewed: () => void; markAllUnviewed: () => void } | null>
   agentChat: { prUrl?: string; prNumber?: number } | null | undefined
   // Real-time sidebar width for responsive layout during resize
   sidebarWidth: number
@@ -942,6 +979,8 @@ interface DiffSidebarContentProps {
   subChats?: Array<{ id: string; name: string; filePaths: string[]; fileCount: number }>
   // Initial subchat filter (e.g., from Review button)
   initialSubChatFilter?: string | null
+  // Callback when marking file as viewed to select next file
+  onSelectNextFile?: (filePath: string) => void
 }
 
 // Memoized commit file item for History tab
@@ -980,10 +1019,8 @@ const CommitFileItem = memo(function CommitFileItem({
   )
 })
 
-function DiffSidebarContent({
+const DiffSidebarContent = memo(function DiffSidebarContent({
   worktreePath,
-  selectedFilePath,
-  onFileSelect,
   chatId,
   sandboxId,
   repository,
@@ -1001,10 +1038,31 @@ function DiffSidebarContent({
   diffMode,
   setDiffMode,
   onCreatePr,
-  onCommitSuccess,
   subChats = [],
-  initialSubChatFilter = null,
-}: DiffSidebarContentProps) {
+}: Omit<DiffSidebarContentProps, 'selectedFilePath' | 'onFileSelect' | 'onCommitSuccess' | 'initialSubChatFilter' | 'onSelectNextFile'>) {
+  // Get values from context instead of props
+  const {
+    selectedFilePath,
+    filteredSubChatId,
+    handleDiffFileSelect,
+    handleSelectNextFile,
+    handleCommitSuccess,
+    handleViewedCountChange,
+  } = useDiffState()
+
+  // Compute initial selected file synchronously for first render
+  // This prevents AgentDiffView from rendering all files before filter kicks in
+  const initialSelectedFile = useMemo(() => {
+    if (selectedFilePath) return selectedFilePath
+    if (parsedFileDiffs && parsedFileDiffs.length > 0) {
+      const firstFile = parsedFileDiffs[0]
+      const filePath = firstFile.newPath !== '/dev/null' ? firstFile.newPath : firstFile.oldPath
+      if (filePath && filePath !== '/dev/null') {
+        return filePath
+      }
+    }
+    return null
+  }, [selectedFilePath, parsedFileDiffs])
   const [changesPanelWidth, setChangesPanelWidth] = useAtom(agentsChangesPanelWidthAtom)
   const [isChangesPanelCollapsed, setIsChangesPanelCollapsed] = useAtom(agentsChangesPanelCollapsedAtom)
   const [isResizing, setIsResizing] = useState(false)
@@ -1077,8 +1135,8 @@ function DiffSidebarContent({
   // Handle file selection in commit (History tab)
   const handleCommitFileSelect = useCallback((file: { path: string }, commitHash: string) => {
     // Set selected file path for highlighting
-    onFileSelect(file, "")
-  }, [onFileSelect])
+    handleDiffFileSelect(file, "")
+  }, [handleDiffFileSelect])
 
   // Fetch commit files when a commit is selected
   const { data: commitFiles } = trpc.changes.getCommitFiles.useQuery(
@@ -1131,12 +1189,12 @@ function DiffSidebarContent({
             <ChangesPanel
               worktreePath={worktreePath}
               selectedFilePath={selectedFilePath}
-              onFileSelect={onFileSelect}
+              onFileSelect={handleDiffFileSelect}
               onFileOpenPinned={() => {}}
               onCreatePr={onCreatePr}
-              onCommitSuccess={onCommitSuccess}
+              onCommitSuccess={handleCommitSuccess}
               subChats={subChats}
-              initialSubChatFilter={initialSubChatFilter}
+              initialSubChatFilter={filteredSubChatId}
               chatId={chatId}
               selectedCommitHash={selectedCommit?.hash}
               onCommitSelect={handleCommitSelect}
@@ -1147,11 +1205,15 @@ function DiffSidebarContent({
           </div>
         )}
         {/* Bottom: File list (when History tab + commit selected) or AgentDiffView (diff) */}
-        <div className="flex-1 overflow-hidden flex flex-col">
-          {activeTab === "history" && selectedCommit ? (
-            /* Show list of files in commit (History tab) */
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              {!commitFiles ? (
+        {/* Both views are always mounted but hidden via CSS to prevent expensive re-mounts */}
+        <div className="flex-1 overflow-hidden flex flex-col relative">
+          {/* History view - files in commit */}
+          <div className={cn(
+            "absolute inset-0 overflow-y-auto",
+            activeTab === "history" && selectedCommit ? "z-10" : "z-0 invisible"
+          )}>
+            {selectedCommit && (
+              !commitFiles ? (
                 <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
                   Loading files...
                 </div>
@@ -1198,26 +1260,31 @@ function DiffSidebarContent({
                     />
                   ))}
                 </>
-              )}
-            </div>
-          ) : (
-            /* Show diff view (Changes tab or no commit selected) */
-            <div className="flex-1 min-h-0 overflow-hidden">
-              <AgentDiffView
-                ref={diffViewRef}
-                chatId={chatId}
-                sandboxId={sandboxId}
-                worktreePath={worktreePath || undefined}
-                repository={repository}
-                onStatsChange={setDiffStats}
-                initialDiff={effectiveDiff}
-                initialParsedFiles={effectiveParsedFiles}
-                prefetchedFileContents={effectivePrefetchedContents}
-                showFooter={false}
-                onCollapsedStateChange={setDiffCollapseState}
-              />
-            </div>
-          )}
+              )
+            )}
+          </div>
+          {/* Diff view - always mounted to prevent expensive re-initialization */}
+          <div className={cn(
+            "absolute inset-0 overflow-hidden",
+            activeTab === "history" && selectedCommit ? "z-0 invisible" : "z-10"
+          )}>
+            <AgentDiffView
+              ref={diffViewRef}
+              chatId={chatId}
+              sandboxId={sandboxId}
+              worktreePath={worktreePath || undefined}
+              repository={repository}
+              onStatsChange={setDiffStats}
+              initialDiff={effectiveDiff}
+              initialParsedFiles={effectiveParsedFiles}
+              prefetchedFileContents={effectivePrefetchedContents}
+              showFooter={false}
+              onCollapsedStateChange={setDiffCollapseState}
+              onSelectNextFile={handleSelectNextFile}
+              onViewedCountChange={handleViewedCountChange}
+              initialSelectedFile={initialSelectedFile}
+            />
+          </div>
         </div>
       </div>
     )
@@ -1235,12 +1302,12 @@ function DiffSidebarContent({
           <ChangesPanel
             worktreePath={worktreePath}
             selectedFilePath={selectedFilePath}
-            onFileSelect={onFileSelect}
+            onFileSelect={handleDiffFileSelect}
             onFileOpenPinned={() => {}}
             onCreatePr={onCreatePr}
-            onCommitSuccess={onCommitSuccess}
+            onCommitSuccess={handleCommitSuccess}
             subChats={subChats}
-            initialSubChatFilter={initialSubChatFilter}
+            initialSubChatFilter={filteredSubChatId}
             chatId={chatId}
             selectedCommitHash={selectedCommit?.hash}
             onCommitSelect={handleCommitSelect}
@@ -1261,14 +1328,18 @@ function DiffSidebarContent({
         </div>
       )}
       {/* Right: File list (when History tab) or AgentDiffView (when Changes tab) */}
+      {/* Both views are always mounted but hidden via CSS to prevent expensive re-mounts */}
       <div className={cn(
-        "flex-1 h-full min-w-0 overflow-hidden flex flex-col",
+        "flex-1 h-full min-w-0 overflow-hidden relative",
         "border-l border-border/50"
       )}>
-        {activeTab === "history" && selectedCommit ? (
-          /* Show list of files in commit (History tab) */
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            {!commitFiles ? (
+        {/* History view - files in commit */}
+        <div className={cn(
+          "absolute inset-0 overflow-y-auto",
+          activeTab === "history" && selectedCommit ? "z-10" : "z-0 invisible"
+        )}>
+          {selectedCommit && (
+            !commitFiles ? (
               <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
                 Loading files...
               </div>
@@ -1315,33 +1386,386 @@ function DiffSidebarContent({
                   />
                 ))}
               </>
-            )}
-          </div>
-        ) : (
-          /* Show diff view (Changes tab or no commit selected) */
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <AgentDiffView
-              ref={diffViewRef}
-              chatId={chatId}
-              sandboxId={sandboxId}
-              worktreePath={worktreePath || undefined}
-              repository={repository}
-              onStatsChange={setDiffStats}
-              initialDiff={effectiveDiff}
-              initialParsedFiles={effectiveParsedFiles}
-              prefetchedFileContents={effectivePrefetchedContents}
-              showFooter={true}
-              onCollapsedStateChange={setDiffCollapseState}
-            />
-          </div>
-        )}
+            )
+          )}
+        </div>
+        {/* Diff view - always mounted to prevent expensive re-initialization */}
+        <div className={cn(
+          "absolute inset-0 overflow-hidden",
+          activeTab === "history" && selectedCommit ? "z-0 invisible" : "z-10"
+        )}>
+          <AgentDiffView
+            ref={diffViewRef}
+            chatId={chatId}
+            sandboxId={sandboxId}
+            worktreePath={worktreePath || undefined}
+            repository={repository}
+            onStatsChange={setDiffStats}
+            initialDiff={effectiveDiff}
+            initialParsedFiles={effectiveParsedFiles}
+            prefetchedFileContents={effectivePrefetchedContents}
+            showFooter={true}
+            onCollapsedStateChange={setDiffCollapseState}
+            onSelectNextFile={handleSelectNextFile}
+            onViewedCountChange={handleViewedCountChange}
+            initialSelectedFile={initialSelectedFile}
+          />
+        </div>
       </div>
     </div>
   )
+})
+
+// ============================================================================
+// DiffStateProvider - manages diff state in isolation from ChatView
+// This prevents ChatView from re-rendering when selected file changes
+// ============================================================================
+
+interface DiffStateProviderProps {
+  isDiffSidebarOpen: boolean
+  parsedFileDiffs: ParsedDiffFile[] | null
+  isDiffSidebarNarrow: boolean
+  setIsDiffSidebarOpen: (open: boolean) => void
+  setDiffStats: (stats: { isLoading: boolean; hasChanges: boolean; fileCount: number; additions: number; deletions: number }) => void
+  setDiffContent: (content: string | null) => void
+  setParsedFileDiffs: (files: ParsedDiffFile[] | null) => void
+  setPrefetchedFileContents: (contents: Record<string, string>) => void
+  fetchDiffStats: () => void
+  children: React.ReactNode
 }
 
+const DiffStateProvider = memo(function DiffStateProvider({
+  isDiffSidebarOpen,
+  parsedFileDiffs,
+  isDiffSidebarNarrow,
+  setIsDiffSidebarOpen,
+  setDiffStats,
+  setDiffContent,
+  setParsedFileDiffs,
+  setPrefetchedFileContents,
+  fetchDiffStats,
+  children,
+}: DiffStateProviderProps) {
+  // Viewed count state - kept here to avoid re-rendering ChatView
+  const [viewedCount, setViewedCount] = useState(0)
+
+  // All diff-related atoms are read HERE, not in ChatView
+  const [selectedFilePath, setSelectedFilePath] = useAtom(selectedDiffFilePathAtom)
+  const [, setFilteredDiffFiles] = useAtom(filteredDiffFilesAtom)
+  const [filteredSubChatId, setFilteredSubChatId] = useAtom(filteredSubChatIdAtom)
+  const isChangesPanelCollapsed = useAtomValue(agentsChangesPanelCollapsedAtom)
+
+  // Auto-select first file when diff sidebar opens - use useLayoutEffect for synchronous update
+  // This prevents the initial render from showing all 11 files before filter kicks in
+  useLayoutEffect(() => {
+    if (!isDiffSidebarOpen) {
+      setSelectedFilePath(null)
+      setFilteredDiffFiles(null)
+      return
+    }
+
+    // Determine which file to select
+    let fileToSelect = selectedFilePath
+    if (!fileToSelect && parsedFileDiffs && parsedFileDiffs.length > 0) {
+      const firstFile = parsedFileDiffs[0]
+      fileToSelect = firstFile.newPath !== '/dev/null' ? firstFile.newPath : firstFile.oldPath
+      if (fileToSelect && fileToSelect !== '/dev/null') {
+        setSelectedFilePath(fileToSelect)
+      }
+    }
+
+    // Filter logic based on layout mode
+    const shouldShowAllFiles = isDiffSidebarNarrow && isChangesPanelCollapsed
+
+    if (shouldShowAllFiles) {
+      setFilteredDiffFiles(null)
+    } else if (fileToSelect) {
+      setFilteredDiffFiles([fileToSelect])
+    } else {
+      setFilteredDiffFiles(null)
+    }
+  }, [isDiffSidebarOpen, selectedFilePath, parsedFileDiffs, isDiffSidebarNarrow, isChangesPanelCollapsed, setFilteredDiffFiles, setSelectedFilePath])
+
+  // Stable callbacks
+  const handleDiffFileSelect = useCallback((file: { path: string }, _category: string) => {
+    setSelectedFilePath(file.path)
+    setFilteredDiffFiles([file.path])
+  }, [setSelectedFilePath, setFilteredDiffFiles])
+
+  const handleSelectNextFile = useCallback((filePath: string) => {
+    setSelectedFilePath(filePath)
+    setFilteredDiffFiles([filePath])
+  }, [setSelectedFilePath, setFilteredDiffFiles])
+
+  const handleCommitSuccess = useCallback(() => {
+    setSelectedFilePath(null)
+    setFilteredDiffFiles(null)
+    setParsedFileDiffs(null)
+    setDiffContent(null)
+    setPrefetchedFileContents({})
+    setDiffStats({
+      fileCount: 0,
+      additions: 0,
+      deletions: 0,
+      isLoading: true,
+      hasChanges: false,
+    })
+    setTimeout(() => {
+      fetchDiffStats()
+    }, 500)
+  }, [setSelectedFilePath, setFilteredDiffFiles, setParsedFileDiffs, setDiffContent, setPrefetchedFileContents, setDiffStats, fetchDiffStats])
+
+  const handleCloseDiff = useCallback(() => {
+    setIsDiffSidebarOpen(false)
+    setFilteredSubChatId(null)
+  }, [setIsDiffSidebarOpen, setFilteredSubChatId])
+
+  const handleViewedCountChange = useCallback((count: number) => {
+    setViewedCount(count)
+  }, [])
+
+  const contextValue = useMemo(() => ({
+    selectedFilePath,
+    filteredSubChatId,
+    viewedCount,
+    handleDiffFileSelect,
+    handleSelectNextFile,
+    handleCommitSuccess,
+    handleCloseDiff,
+    handleViewedCountChange,
+  }), [selectedFilePath, filteredSubChatId, viewedCount, handleDiffFileSelect, handleSelectNextFile, handleCommitSuccess, handleCloseDiff, handleViewedCountChange])
+
+  return (
+    <DiffStateContext.Provider value={contextValue}>
+      {children}
+    </DiffStateContext.Provider>
+  )
+})
+
+// ============================================================================
+// DiffSidebarRenderer - renders the diff sidebar using context for state
+// This component is inside DiffStateProvider and uses useDiffState()
+// ============================================================================
+
+interface DiffSidebarRendererProps {
+  worktreePath: string | null
+  chatId: string
+  sandboxId: string | null
+  repository: { owner: string; name: string } | null
+  diffStats: { isLoading: boolean; hasChanges: boolean; fileCount: number; additions: number; deletions: number }
+  diffContent: string | null
+  parsedFileDiffs: ParsedDiffFile[] | null
+  prefetchedFileContents: Record<string, string>
+  setDiffCollapseState: (state: { allCollapsed: boolean; allExpanded: boolean }) => void
+  diffViewRef: React.RefObject<AgentDiffViewRef | null>
+  diffSidebarRef: React.RefObject<HTMLDivElement | null>
+  agentChat: { prUrl?: string; prNumber?: number } | null | undefined
+  branchData: { current: string } | undefined
+  gitStatus: { pushCount?: number; pullCount?: number; hasUpstream?: boolean; ahead?: number; behind?: number; staged?: any[]; unstaged?: any[]; untracked?: any[] } | undefined
+  isGitStatusLoading: boolean
+  isDiffSidebarOpen: boolean
+  diffDisplayMode: "side-peek" | "center-peek" | "full-page"
+  diffSidebarWidth: number
+  handleReview: () => void
+  isReviewing: boolean
+  handleCreatePr: () => void
+  isCreatingPr: boolean
+  handleMergePr: () => void
+  mergePrMutation: { isPending: boolean }
+  handleRefreshGitStatus: () => void
+  hasPrNumber: boolean
+  isPrOpen: boolean
+  hasMergeConflicts: boolean
+  handleFixConflicts: () => void
+  handleExpandAll: () => void
+  handleCollapseAll: () => void
+  diffMode: DiffModeEnum
+  setDiffMode: (mode: DiffModeEnum) => void
+  handleMarkAllViewed: () => void
+  handleMarkAllUnviewed: () => void
+  isDesktop: boolean
+  isFullscreen: boolean
+  setDiffDisplayMode: (mode: "side-peek" | "center-peek" | "full-page") => void
+  handleCommitToPr: () => void
+  isCommittingToPr: boolean
+  subChatsWithFiles: Array<{ id: string; name: string; filePaths: string[]; fileCount: number }>
+  setDiffStats: (stats: { isLoading: boolean; hasChanges: boolean; fileCount: number; additions: number; deletions: number }) => void
+}
+
+const DiffSidebarRenderer = memo(function DiffSidebarRenderer({
+  worktreePath,
+  chatId,
+  sandboxId,
+  repository,
+  diffStats,
+  diffContent,
+  parsedFileDiffs,
+  prefetchedFileContents,
+  setDiffCollapseState,
+  diffViewRef,
+  diffSidebarRef,
+  agentChat,
+  branchData,
+  gitStatus,
+  isGitStatusLoading,
+  isDiffSidebarOpen,
+  diffDisplayMode,
+  diffSidebarWidth,
+  handleReview,
+  isReviewing,
+  handleCreatePr,
+  isCreatingPr,
+  handleMergePr,
+  mergePrMutation,
+  handleRefreshGitStatus,
+  hasPrNumber,
+  isPrOpen,
+  hasMergeConflicts,
+  handleFixConflicts,
+  handleExpandAll,
+  handleCollapseAll,
+  diffMode,
+  setDiffMode,
+  handleMarkAllViewed,
+  handleMarkAllUnviewed,
+  isDesktop,
+  isFullscreen,
+  setDiffDisplayMode,
+  handleCommitToPr,
+  isCommittingToPr,
+  subChatsWithFiles,
+  setDiffStats,
+}: DiffSidebarRendererProps) {
+  // Get callbacks and state from context
+  const { handleCloseDiff, viewedCount, handleViewedCountChange } = useDiffState()
+
+  // Width for responsive layouts - use stored width for sidebar, fixed for dialog/fullpage
+  const effectiveWidth = diffDisplayMode === "side-peek"
+    ? diffSidebarWidth
+    : diffDisplayMode === "center-peek"
+      ? 1200
+      : typeof window !== 'undefined' ? window.innerWidth : 1200
+
+  const diffViewContent = (
+    <div
+      ref={diffSidebarRef}
+      className="flex flex-col h-full min-w-0 overflow-hidden"
+    >
+      {/* Unified Header - branch selector, fetch, review, PR actions, close */}
+      {worktreePath && (
+        <DiffSidebarHeader
+          worktreePath={worktreePath}
+          currentBranch={branchData?.current ?? ""}
+          diffStats={diffStats}
+          sidebarWidth={effectiveWidth}
+          pushCount={gitStatus?.pushCount ?? 0}
+          pullCount={gitStatus?.pullCount ?? 0}
+          hasUpstream={gitStatus?.hasUpstream ?? true}
+          isSyncStatusLoading={isGitStatusLoading}
+          aheadOfDefault={gitStatus?.ahead ?? 0}
+          behindDefault={gitStatus?.behind ?? 0}
+          onReview={handleReview}
+          isReviewing={isReviewing}
+          onCreatePr={handleCreatePr}
+          isCreatingPr={isCreatingPr}
+          onCreatePrWithAI={handleCreatePr}
+          isCreatingPrWithAI={isCreatingPr}
+          onMergePr={handleMergePr}
+          isMergingPr={mergePrMutation.isPending}
+          onClose={handleCloseDiff}
+          onRefresh={handleRefreshGitStatus}
+          hasPrNumber={hasPrNumber}
+          isPrOpen={isPrOpen}
+          hasMergeConflicts={hasMergeConflicts}
+          onFixConflicts={handleFixConflicts}
+          onExpandAll={handleExpandAll}
+          onCollapseAll={handleCollapseAll}
+          viewMode={diffMode}
+          onViewModeChange={setDiffMode}
+          viewedCount={viewedCount}
+          onMarkAllViewed={handleMarkAllViewed}
+          onMarkAllUnviewed={handleMarkAllUnviewed}
+          isDesktop={isDesktop}
+          isFullscreen={isFullscreen}
+          displayMode={diffDisplayMode}
+          onDisplayModeChange={setDiffDisplayMode}
+        />
+      )}
+
+      {/* Content: file list + diff view - vertical when narrow */}
+      <DiffSidebarContent
+        worktreePath={worktreePath}
+        chatId={chatId}
+        sandboxId={sandboxId}
+        repository={repository}
+        diffStats={diffStats}
+        setDiffStats={setDiffStats}
+        diffContent={diffContent}
+        parsedFileDiffs={parsedFileDiffs}
+        prefetchedFileContents={prefetchedFileContents}
+        setDiffCollapseState={setDiffCollapseState}
+        diffViewRef={diffViewRef}
+        agentChat={agentChat}
+        sidebarWidth={effectiveWidth}
+        onCommitWithAI={handleCommitToPr}
+        isCommittingWithAI={isCommittingToPr}
+        diffMode={diffMode}
+        setDiffMode={setDiffMode}
+        onCreatePr={handleCreatePr}
+        subChats={subChatsWithFiles}
+      />
+    </div>
+  )
+
+  // Render based on display mode
+  if (diffDisplayMode === "side-peek") {
+    return (
+      <ResizableSidebar
+        isOpen={isDiffSidebarOpen}
+        onClose={handleCloseDiff}
+        widthAtom={agentsDiffSidebarWidthAtom}
+        minWidth={320}
+        side="right"
+        animationDuration={0}
+        initialWidth={0}
+        exitWidth={0}
+        showResizeTooltip={true}
+        className="bg-background border-l"
+        style={{ borderLeftWidth: "0.5px", overflow: "hidden" }}
+      >
+        {diffViewContent}
+      </ResizableSidebar>
+    )
+  }
+
+  if (diffDisplayMode === "center-peek") {
+    return (
+      <DiffCenterPeekDialog
+        isOpen={isDiffSidebarOpen}
+        onClose={handleCloseDiff}
+      >
+        {diffViewContent}
+      </DiffCenterPeekDialog>
+    )
+  }
+
+  if (diffDisplayMode === "full-page") {
+    return (
+      <DiffFullPageView
+        isOpen={isDiffSidebarOpen}
+        onClose={handleCloseDiff}
+      >
+        {diffViewContent}
+      </DiffFullPageView>
+    )
+  }
+
+  return null
+})
+
 // Inner chat component - only rendered when chat object is ready
-function ChatViewInner({
+// Memoized to prevent re-renders when parent state changes (e.g., selectedFilePath)
+const ChatViewInner = memo(function ChatViewInner({
   chat,
   subChatId,
   parentChatId,
@@ -1409,6 +1833,7 @@ function ChatViewInner({
   }, [])
   const editorRef = useRef<AgentsMentionsEditorHandle>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const questionRef = useRef<AgentUserQuestionHandle>(null)
   const prevChatKeyRef = useRef<string | null>(null)
   const prevSubChatIdRef = useRef<string | null>(null)
 
@@ -1428,6 +1853,9 @@ function ChatViewInner({
     setTtsPlaybackRate(rate)
     localStorage.setItem("tts-playback-rate", String(rate))
   }, [])
+
+  // PR creation loading state - from atom to allow resetting after message sent
+  const setIsCreatingPr = useSetAtom(isCreatingPrAtom)
 
   // Rollback state
   const [isRollingBack, setIsRollingBack] = useState(false)
@@ -1664,15 +2092,28 @@ function ChatViewInner({
     setFilesFromDraft,
   } = useAgentsFileUpload()
 
-  // Text context selection hook (for selecting text from assistant messages)
+  // Text context selection hook (for selecting text from assistant messages and diff)
   const {
     textContexts,
-    addTextContext,
+    diffTextContexts,
+    addTextContext: addTextContextOriginal,
+    addDiffTextContext,
     removeTextContext,
+    removeDiffTextContext,
     clearTextContexts,
+    clearDiffTextContexts,
     textContextsRef,
+    diffTextContextsRef,
     setTextContextsFromDraft,
+    setDiffTextContextsFromDraft,
   } = useTextContextSelection()
+
+  // Quick comment state
+  const [quickCommentState, setQuickCommentState] = useState<{
+    selectedText: string
+    source: TextSelectionSource
+    rect: DOMRect
+  } | null>(null)
 
   // Message queue for sending messages while streaming
   const queue = useMessageQueueStore((s) => s.queues[subChatId] ?? EMPTY_QUEUE)
@@ -1797,6 +2238,69 @@ function ChatViewInner({
     )
   }, [subChatId])
 
+  // Wrapper for addTextContext that handles TextSelectionSource
+  const addTextContext = useCallback((text: string, source: TextSelectionSource) => {
+    if (source.type === "assistant-message") {
+      addTextContextOriginal(text, source.messageId)
+    } else if (source.type === "diff") {
+      addDiffTextContext(text, source.filePath, source.lineNumber, source.lineType)
+    } else if (source.type === "tool-edit") {
+      // Tool edit selections are treated as code selections (similar to diff)
+      addDiffTextContext(text, source.filePath)
+    }
+  }, [addTextContextOriginal, addDiffTextContext])
+
+  // Focus handler for text selection popover - focus chat input after adding to context
+  const handleFocusInput = useCallback(() => {
+    editorRef.current?.focus()
+  }, [])
+
+  // Handler for quick comment trigger from popover
+  const handleQuickComment = useCallback((text: string, source: TextSelectionSource, rect: DOMRect) => {
+    setQuickCommentState({ selectedText: text, source, rect })
+  }, [])
+
+  // Handler for quick comment submission
+  const handleQuickCommentSubmit = useCallback((comment: string, selectedText: string, source: TextSelectionSource) => {
+    // Format message with mention token + comment
+    const preview = selectedText.slice(0, 50).replace(/[:\[\]]/g, "")
+    const encodedText = utf8ToBase64(selectedText)
+
+    let mentionToken: string
+    if (source.type === "diff") {
+      const lineNum = source.lineNumber || 0
+      mentionToken = `@[${MENTION_PREFIXES.DIFF}${source.filePath}:${lineNum}:${preview}:${encodedText}]`
+    } else if (source.type === "tool-edit") {
+      // Tool edit is treated as code/diff context
+      mentionToken = `@[${MENTION_PREFIXES.DIFF}${source.filePath}:0:${preview}:${encodedText}]`
+    } else {
+      mentionToken = `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
+    }
+
+    const message = `${mentionToken} ${comment}`
+
+    // If streaming, add to queue
+    if (isStreamingRef.current) {
+      const item = createQueueItem(generateQueueId(), message)
+      addToQueue(subChatId, item)
+    } else {
+      // Send directly
+      sendMessageRef.current({
+        role: "user",
+        parts: [{ type: "text", text: message }],
+      })
+    }
+
+    // Clear state and selection
+    setQuickCommentState(null)
+    window.getSelection()?.removeAllRanges()
+  }, [addToQueue, subChatId])
+
+  // Handler for quick comment cancel
+  const handleQuickCommentCancel = useCallback(() => {
+    setQuickCommentState(null)
+  }, [])
+
   // Sync loading status to atom for UI indicators
   // When streaming starts, set loading. When it stops, clear loading.
   // Unseen changes, sound notification, and sidebar refresh are handled in onFinish callback
@@ -1826,6 +2330,9 @@ function ChatViewInner({
         role: "user",
         parts: [{ type: "text", text: pendingPrMessage }],
       })
+
+      // Reset creating PR state after message is sent
+      setIsCreatingPr(false)
     }
   }, [pendingPrMessage, isStreaming, sendMessage, setPendingPrMessage])
 
@@ -2026,61 +2533,86 @@ function ChatViewInner({
     }
   }, [pendingQuestions, setPendingQuestions])
 
-  // Handle answering questions with custom text from input
-  const handleAnswerWithCustomText = useCallback(
-    async (selectedAnswers: Record<string, string>) => {
+  // Ref to prevent double submit of question answer
+  const isSubmittingQuestionAnswerRef = useRef(false)
+
+  // Handle answering questions with custom text from input (called on Enter in input)
+  const handleSubmitWithQuestionAnswer = useCallback(
+    async () => {
       if (!pendingQuestions) return
+      if (isSubmittingQuestionAnswerRef.current) return
+      isSubmittingQuestionAnswerRef.current = true
 
-      // 1. Get custom text from input
-      const customText = editorRef.current?.getValue()?.trim() || ""
-      if (!customText) return
-
-      // 2. Format answers - append custom text to the last question's answer
-      const formattedAnswers: Record<string, string> = { ...selectedAnswers }
-      const lastQuestion =
-        pendingQuestions.questions[pendingQuestions.questions.length - 1]
-      if (lastQuestion) {
-        const existingAnswer = selectedAnswers[lastQuestion.question]
-        if (existingAnswer) {
-          formattedAnswers[lastQuestion.question] =
-            `${existingAnswer}, Other: ${customText}`
-        } else {
-          formattedAnswers[lastQuestion.question] = `Other: ${customText}`
+      try {
+        // 1. Get custom text from input
+        const customText = editorRef.current?.getValue()?.trim() || ""
+        if (!customText) {
+          isSubmittingQuestionAnswerRef.current = false
+          return
         }
+
+        // 2. Get already selected answers from question component
+        const selectedAnswers = questionRef.current?.getAnswers() || {}
+        const formattedAnswers: Record<string, string> = { ...selectedAnswers }
+
+        // 3. Add custom text to the last question as "Other"
+        const lastQuestion =
+          pendingQuestions.questions[pendingQuestions.questions.length - 1]
+        if (lastQuestion) {
+          const existingAnswer = formattedAnswers[lastQuestion.question]
+          if (existingAnswer) {
+            // Append to existing answer
+            formattedAnswers[lastQuestion.question] = `${existingAnswer}, Other: ${customText}`
+          } else {
+            formattedAnswers[lastQuestion.question] = `Other: ${customText}`
+          }
+        }
+
+        // 4. Submit tool response with all answers
+        await trpcClient.claude.respondToolApproval.mutate({
+          toolUseId: pendingQuestions.toolUseId,
+          approved: true,
+          updatedInput: {
+            questions: pendingQuestions.questions,
+            answers: formattedAnswers,
+          },
+        })
+        setPendingQuestions(null)
+
+        // 5. Stop stream if currently streaming
+        if (isStreamingRef.current) {
+          agentChatStore.setManuallyAborted(subChatId, true)
+          await stopRef.current()
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+
+        // 6. Clear input
+        editorRef.current?.clear()
+        if (parentChatId) {
+          clearSubChatDraft(parentChatId, subChatId)
+        }
+
+        // 7. Send custom text as a new user message
+        shouldAutoScrollRef.current = true
+        await sendMessageRef.current({
+          role: "user",
+          parts: [{ type: "text", text: customText }],
+        })
+      } finally {
+        isSubmittingQuestionAnswerRef.current = false
       }
-
-      // 3. Submit tool response with answers
-      await trpcClient.claude.respondToolApproval.mutate({
-        toolUseId: pendingQuestions.toolUseId,
-        approved: true,
-        updatedInput: {
-          questions: pendingQuestions.questions,
-          answers: formattedAnswers,
-        },
-      })
-      setPendingQuestions(null)
-
-      // 4. Stop stream if currently streaming
-      if (isStreamingRef.current) {
-        agentChatStore.setManuallyAborted(subChatId, true)
-        await stopRef.current()
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-
-      // 5. Clear input
-      editorRef.current?.clear()
-      if (parentChatId) {
-        clearSubChatDraft(parentChatId, subChatId)
-      }
-
-      // 6. Send custom text as a new user message
-      shouldAutoScrollRef.current = true
-      await sendMessageRef.current({
-        role: "user",
-        parts: [{ type: "text", text: customText }],
-      })
     },
     [pendingQuestions, setPendingQuestions, subChatId, parentChatId],
+  )
+
+  // Memoize the callback to prevent ChatInputArea re-renders
+  // Only provide callback when there's a pending question for this subChat
+  const submitWithQuestionAnswerCallback = useMemo(
+    () =>
+      pendingQuestions?.subChatId === subChatId
+        ? handleSubmitWithQuestionAnswer
+        : undefined,
+    [pendingQuestions?.subChatId, subChatId, handleSubmitWithQuestionAnswer],
   )
 
   // Watch for pending auth retry message (after successful OAuth flow)
@@ -2167,12 +2699,16 @@ function ChatViewInner({
     // Update React state (for UI)
     setIsPlanMode(false)
 
+    // Enable auto-scroll and immediately scroll to bottom
+    shouldAutoScrollRef.current = true
+    scrollToBottom()
+
     // Send "Build plan" message (now in agent mode)
     sendMessageRef.current({
       role: "user",
       parts: [{ type: "text", text: "Build plan" }],
     })
-  }, [subChatId, setIsPlanMode])
+  }, [subChatId, setIsPlanMode, scrollToBottom])
 
   // Detect PR URLs in assistant messages and store them
   // Initialize with existing PR URL to prevent duplicate toast on re-mount
@@ -2639,20 +3175,34 @@ function ChatViewInner({
         })),
     ]
 
-    // Add text contexts as referenced text before user's message
-    if (currentTextContexts.length > 0) {
-      const referencedText = currentTextContexts
-        .map((tc) => `[Referenced text from conversation]:\n${tc.text}\n[End reference]`)
-        .join("\n\n")
-      parts.push({ type: "text", text: referencedText })
+    // Add text contexts as mention tokens
+    const currentDiffTextContexts = diffTextContextsRef.current
+    let mentionPrefix = ""
+
+    if (currentTextContexts.length > 0 || currentDiffTextContexts.length > 0) {
+      const quoteMentions = currentTextContexts.map((tc) => {
+        const preview = tc.preview.replace(/[:\[\]]/g, "") // Sanitize preview
+        const encodedText = utf8ToBase64(tc.text) // Base64 encode full text
+        return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
+      })
+
+      const diffMentions = currentDiffTextContexts.map((dtc) => {
+        const preview = dtc.preview.replace(/[:\[\]]/g, "") // Sanitize preview
+        const encodedText = utf8ToBase64(dtc.text) // Base64 encode full text
+        const lineNum = dtc.lineNumber || 0
+        return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
+      })
+
+      mentionPrefix = [...quoteMentions, ...diffMentions].join(" ") + " "
     }
 
-    if (text) {
-      parts.push({ type: "text", text })
+    if (text || mentionPrefix) {
+      parts.push({ type: "text", text: mentionPrefix + (text || "") })
     }
 
     clearAll()
     clearTextContexts()
+    clearDiffTextContexts()
 
     // Optimistic update: immediately update chat's updated_at and resort array for instant sidebar resorting
     if (teamId) {
@@ -2744,16 +3294,30 @@ function ChatViewInner({
       })),
     ]
 
-    // Add text contexts as referenced text
+    // Add text contexts as mention tokens
+    let mentionPrefix = ""
     if (item.textContexts && item.textContexts.length > 0) {
-      const referencedText = item.textContexts
-        .map((tc) => `[Referenced text from conversation]:\n${tc.text}\n[End reference]`)
-        .join("\n\n")
-      parts.push({ type: "text", text: referencedText })
+      const quoteMentions = item.textContexts.map((tc) => {
+        const preview = tc.text.slice(0, 50).replace(/[:\[\]]/g, "") // Create and sanitize preview
+        const encodedText = utf8ToBase64(tc.text) // Base64 encode full text
+        return `@[${MENTION_PREFIXES.QUOTE}${preview}:${encodedText}]`
+      })
+      mentionPrefix = quoteMentions.join(" ") + " "
     }
 
-    if (item.message) {
-      parts.push({ type: "text", text: item.message })
+    // Add diff text contexts as mention tokens
+    if (item.diffTextContexts && item.diffTextContexts.length > 0) {
+      const diffMentions = item.diffTextContexts.map((dtc) => {
+        const preview = dtc.text.slice(0, 50).replace(/[:\[\]]/g, "") // Create and sanitize preview
+        const encodedText = utf8ToBase64(dtc.text) // Base64 encode full text
+        const lineNum = dtc.lineNumber || 0
+        return `@[${MENTION_PREFIXES.DIFF}${dtc.filePath}:${lineNum}:${preview}:${encodedText}]`
+      })
+      mentionPrefix += diffMentions.join(" ") + " "
+    }
+
+    if (item.message || mentionPrefix) {
+      parts.push({ type: "text", text: mentionPrefix + (item.message || "") })
     }
 
     // Track message sent
@@ -2962,6 +3526,7 @@ function ChatViewInner({
   }, [hasUnapprovedPlan, isStreaming, handleApprovePlan])
 
   // Cmd/Ctrl + Arrow Down to scroll to bottom (works even when focused in input)
+  // But don't intercept if input has content - let native cursor navigation work
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -2970,6 +3535,12 @@ function ChatViewInner({
         !e.altKey &&
         !e.shiftKey
       ) {
+        // Don't intercept if input has content - let native cursor navigation work
+        const inputValue = editorRef.current?.getValue() || ""
+        if (inputValue.trim().length > 0) {
+          return
+        }
+
         e.preventDefault()
         scrollToBottom()
       }
@@ -3078,7 +3649,22 @@ function ChatViewInner({
     <SearchHighlightProvider>
       <div className="flex flex-col flex-1 min-h-0 relative">
         {/* Text selection popover for adding text to context */}
-        <TextSelectionPopover onAddToContext={addTextContext} />
+        <TextSelectionPopover
+          onAddToContext={addTextContext}
+          onQuickComment={handleQuickComment}
+          onFocusInput={handleFocusInput}
+        />
+
+        {/* Quick comment input */}
+        {quickCommentState && (
+          <QuickCommentInput
+            selectedText={quickCommentState.selectedText}
+            source={quickCommentState.source}
+            rect={quickCommentState.rect}
+            onSubmit={handleQuickCommentSubmit}
+            onCancel={handleQuickCommentCancel}
+          />
+        )}
 
         {/* Chat search bar */}
         <ChatSearchBar messages={messages} topOffset={searchBarTopOffset} />
@@ -3119,8 +3705,10 @@ function ChatViewInner({
         >
           <div>
             {/* ISOLATED: Messages rendered via Jotai atom subscription
-                Each component subscribes to specific atoms and only re-renders when those change */}
+                Each component subscribes to specific atoms and only re-renders when those change
+                KEY: Force remount on subChatId change to ensure fresh atom reads after syncMessages */}
             <IsolatedMessagesSection
+              key={subChatId}
               subChatId={subChatId}
               isMobile={isMobile}
               sandboxSetupStatus={sandboxSetupStatus}
@@ -3142,11 +3730,11 @@ function ChatViewInner({
         <div className="px-4 relative z-20">
           <div className="w-full px-2 max-w-2xl mx-auto">
             <AgentUserQuestion
+              ref={questionRef}
               pendingQuestions={pendingQuestions}
               onAnswer={handleQuestionsAnswer}
               onSkip={handleQuestionsSkip}
               hasCustomText={inputHasContent}
-              onAnswerWithCustomText={handleAnswerWithCustomText}
             />
           </div>
         </div>
@@ -3205,6 +3793,8 @@ function ChatViewInner({
         isUploading={isUploading}
         textContexts={textContexts}
         onRemoveTextContext={removeTextContext}
+        diffTextContexts={diffTextContexts}
+        onRemoveDiffTextContext={removeDiffTextContext}
         messageTokenData={messageTokenData}
         subChatId={subChatId}
         parentChatId={parentChatId}
@@ -3218,6 +3808,7 @@ function ChatViewInner({
         onSendFromQueue={handleSendFromQueue}
         firstQueueItemId={queue[0]?.id}
         onInputContentChange={setInputHasContent}
+        onSubmitWithQuestionAnswer={submitWithQuestionAnswerCallback}
       />
 
         {/* Scroll to bottom button - isolated component to avoid re-renders during streaming */}
@@ -3232,7 +3823,7 @@ function ChatViewInner({
     </SearchHighlightProvider>
     </TextSelectionProvider>
   )
-}
+})
 
 // Chat View wrapper - handles loading and creates chat object
 export function ChatView({
@@ -3291,13 +3882,31 @@ export function ChatView({
   const [isTerminalSidebarOpen, setIsTerminalSidebarOpen] = useAtom(
     terminalSidebarOpenAtom,
   )
-  const [diffStats, setDiffStats] = useState({
+  const [diffStats, setDiffStatsRaw] = useState({
     fileCount: 0,
     additions: 0,
     deletions: 0,
     isLoading: true,
     hasChanges: false,
   })
+  // Smart setter that only updates if values actually changed
+  const setDiffStats = useCallback((val: any) => {
+    setDiffStatsRaw((prev: typeof diffStats) => {
+      // Handle function updates
+      const newVal = typeof val === 'function' ? val(prev) : val
+      // Only update if something changed
+      if (
+        prev.fileCount === newVal.fileCount &&
+        prev.additions === newVal.additions &&
+        prev.deletions === newVal.deletions &&
+        prev.isLoading === newVal.isLoading &&
+        prev.hasChanges === newVal.hasChanges
+      ) {
+        return prev // Return same reference to prevent re-render
+      }
+      return newVal
+    })
+  }, [])
   // Store raw diff content to pass to AgentDiffView (avoids double fetch)
   const [diffContent, setDiffContent] = useState<string | null>(null)
   // Store pre-parsed file diffs (avoids double parsing in AgentDiffView)
@@ -3311,6 +3920,7 @@ export function ChatView({
   const [diffDisplayMode, setDiffDisplayMode] = useAtom(diffViewDisplayModeAtom)
   const subChatsSidebarMode = useAtomValue(agentsSubChatsSidebarModeAtom)
 
+
   // Force narrow width when switching to side-peek mode (from dialog/fullscreen)
   useEffect(() => {
     if (diffDisplayMode === "side-peek") {
@@ -3318,6 +3928,16 @@ export function ChatView({
       appStore.set(agentsDiffSidebarWidthAtom, 400)
     }
   }, [diffDisplayMode])
+
+  // Hide traffic lights when full-page diff is open (they would overlap with content)
+  useEffect(() => {
+    if (!isDesktop || isFullscreen) return
+    if (typeof window === "undefined" || !window.desktopApi?.setTrafficLightVisibility) return
+
+    if (isDiffSidebarOpen && diffDisplayMode === "full-page") {
+      window.desktopApi.setTrafficLightVisibility(false)
+    }
+  }, [isDiffSidebarOpen, diffDisplayMode, isDesktop, isFullscreen])
 
   // Track diff sidebar width for responsive header
   const storedDiffSidebarWidth = useAtomValue(agentsDiffSidebarWidthAtom)
@@ -3394,10 +4014,10 @@ export function ChatView({
     })
   }, [chatId, setUnseenChanges])
 
-  // Get sub-chat state from store
-  const activeSubChatId = useAgentSubChatStore((state) => state.activeSubChatId)
-  const openSubChatIds = useAgentSubChatStore((state) => state.openSubChatIds)
-  const pinnedSubChatIds = useAgentSubChatStore((state) => state.pinnedSubChatIds)
+  // Get sub-chat state from store (using getState() to avoid re-renders on state changes)
+  const activeSubChatId = useAgentSubChatStore.getState().activeSubChatId
+  const openSubChatIds = useAgentSubChatStore.getState().openSubChatIds
+  const pinnedSubChatIds = useAgentSubChatStore.getState().pinnedSubChatIds
 
   // Clear sub-chat "unseen changes" indicator when sub-chat becomes active
   useEffect(() => {
@@ -3411,7 +4031,7 @@ export function ChatView({
       return prev
     })
   }, [activeSubChatId, setSubChatUnseenChanges])
-  const allSubChats = useAgentSubChatStore((state) => state.allSubChats)
+  const allSubChats = useAgentSubChatStore.getState().allSubChats
 
   // tRPC utils for optimistic cache updates
   const utils = api.useUtils()
@@ -3422,17 +4042,12 @@ export function ChatView({
   const generateSubChatNameMutation =
     api.agents.generateSubChatName.useMutation()
 
-  // PR creation loading state
-  const [isCreatingPr, setIsCreatingPr] = useState(false)
+  // PR creation loading state - using atom to allow ChatViewInner to reset it
+  const [isCreatingPr, setIsCreatingPr] = useAtom(isCreatingPrAtom)
   // Review loading state
   const [isReviewing, setIsReviewing] = useState(false)
-  // Selected file path for diff filtering
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
-  const setFilteredDiffFiles = useSetAtom(filteredDiffFilesAtom)
-  // Get subchat filter from Review button
-  const [filteredSubChatId, setFilteredSubChatId] = useAtom(filteredSubChatIdAtom)
-  // Get changes panel collapsed state for filtering logic
-  const isChangesPanelCollapsed = useAtomValue(agentsChangesPanelCollapsedAtom)
+  // Subchat filter setter - used by handleReview to filter by active subchat
+  const setFilteredSubChatId = useSetAtom(filteredSubChatIdAtom)
 
   const { data: agentChat, isLoading } = api.agents.getAgentChat.useQuery(
     { chatId },
@@ -3731,6 +4346,12 @@ export function ChatView({
         return
       }
 
+      // Desktop without chat (viewing main repo directly)
+      if (worktreePath && !chatId) {
+        // TODO: Need to add endpoint that accepts worktreePath directly
+        return
+      }
+
       // Web fallback: use sandbox API (still uses old flow)
       if (sandboxId) {
         const response = await fetch(`/api/agents/sandbox/${sandboxId}/diff`)
@@ -3805,9 +4426,11 @@ export function ChatView({
     fetchDiffStats()
   }, [fetchDiffStats])
 
-  // Refresh diff stats when diff sidebar opens (ensures fresh data)
+  // Refresh diff stats when diff sidebar opens (background refresh - don't block UI)
+  // Keep existing data visible while fetching, only update if data changed
   useEffect(() => {
     if (isDiffSidebarOpen) {
+      // Fetch in background - existing parsedFileDiffs will be shown immediately
       fetchDiffStats()
     }
   }, [isDiffSidebarOpen, fetchDiffStats])
@@ -3860,18 +4483,19 @@ export function ChatView({
       const context = await trpcClient.chats.getPrContext.query({ chatId })
       if (!context) {
         toast.error("Could not get git context", { position: "top-center" })
+        setIsCreatingPr(false)
         return
       }
 
       // Generate message and set it for ChatViewInner to send
       const message = generatePrMessage(context)
       setPendingPrMessage(message)
+      // Don't reset isCreatingPr here - it will be reset after message is sent
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to prepare PR request",
         { position: "top-center" },
       )
-    } finally {
       setIsCreatingPr(false)
     }
   }, [chatId, setPendingPrMessage])
@@ -3922,8 +4546,10 @@ export function ChatView({
         return
       }
 
-      // Set filter to show only files from this chat
-      setFilteredSubChatId(chatId)
+      // Set filter to show only files from the active subchat
+      if (activeSubChatId) {
+        setFilteredSubChatId(activeSubChatId)
+      }
 
       // Generate review message and set it for ChatViewInner to send
       const message = generateReviewMessage(context)
@@ -3936,7 +4562,7 @@ export function ChatView({
     } finally {
       setIsReviewing(false)
     }
-  }, [chatId, setPendingReviewMessage, setFilteredSubChatId])
+  }, [chatId, activeSubChatId, setPendingReviewMessage, setFilteredSubChatId])
 
   // Handle Fix Conflicts - sends a message to Claude to sync with main and fix merge conflicts
   const setPendingConflictResolutionMessage = useSetAtom(pendingConflictResolutionMessageAtom)
@@ -3953,34 +4579,6 @@ Make sure to preserve all functionality from both branches when resolving confli
 
     setPendingConflictResolutionMessage(message)
   }, [setPendingConflictResolutionMessage])
-
-  // Handle file selection in diff sidebar - filters diff to single file
-  const handleDiffFileSelect = useCallback((file: { path: string }, category: string) => {
-    setSelectedFilePath(file.path)
-    setFilteredDiffFiles([file.path])
-  }, [setFilteredDiffFiles])
-
-  // Handle successful commit - reset diff view selection state and refresh diff data
-  const handleCommitSuccess = useCallback(() => {
-    // Clear selection so diff view will show fresh state after data refresh
-    setSelectedFilePath(null)
-    setFilteredDiffFiles(null)
-    // Clear current diff data immediately
-    setParsedFileDiffs(null)
-    setDiffContent(null)
-    setPrefetchedFileContents({})
-    setDiffStats({
-      fileCount: 0,
-      additions: 0,
-      deletions: 0,
-      isLoading: true,
-      hasChanges: false,
-    })
-    // Fetch fresh diff data after a short delay to let git status update
-    setTimeout(() => {
-      fetchDiffStats()
-    }, 500)
-  }, [setFilteredDiffFiles, fetchDiffStats])
 
   // Fetch branch data for diff sidebar header
   const { data: branchData } = trpc.changes.getBranches.useQuery(
@@ -4036,42 +4634,26 @@ Make sure to preserve all functionality from both branches when resolving confli
     }
   }, [gitStatus, isGitStatusLoading, parsedFileDiffs])
 
-  // Auto-select first file when diff sidebar opens and no file is selected
-  useEffect(() => {
-    // Don't run filter logic when sidebar is closed
-    // Filter cleanup happens in AgentDiffView's unmount effect to avoid re-render during exit animation
-    if (!isDiffSidebarOpen) {
-      // Only clear selection, not the filter (to avoid re-render during exit animation)
-      setSelectedFilePath(null)
-      return
-    }
+  // Stable callbacks for DiffSidebarHeader to prevent re-renders
+  const handleRefreshGitStatus = useCallback(() => {
+    refetchGitStatus()
+  }, [refetchGitStatus])
 
-    // Auto-select first file if nothing selected and we have files
-    if (!selectedFilePath && parsedFileDiffs && parsedFileDiffs.length > 0) {
-      const firstFile = parsedFileDiffs[0]
-      const filePath = firstFile.newPath !== '/dev/null' ? firstFile.newPath : firstFile.oldPath
-      if (filePath && filePath !== '/dev/null') {
-        setSelectedFilePath(filePath)
-      }
-    }
+  const handleExpandAll = useCallback(() => {
+    diffViewRef.current?.expandAll()
+  }, [])
 
-    // Filter logic based on layout mode:
-    // - Wide mode (horizontal): always show only selected file
-    // - Narrow mode (vertical):
-    //   - Panel collapsed: show all files
-    //   - Panel expanded: show only selected file
+  const handleCollapseAll = useCallback(() => {
+    diffViewRef.current?.collapseAll()
+  }, [])
 
-    const shouldShowAllFiles = isDiffSidebarNarrow && isChangesPanelCollapsed
+  const handleMarkAllViewed = useCallback(() => {
+    diffViewRef.current?.markAllViewed()
+  }, [])
 
-    if (shouldShowAllFiles) {
-      setFilteredDiffFiles(null)
-    } else if (selectedFilePath) {
-      setFilteredDiffFiles([selectedFilePath])
-    } else {
-      // No file selected - show all as fallback
-      setFilteredDiffFiles(null)
-    }
-  }, [isDiffSidebarOpen, selectedFilePath, parsedFileDiffs, isDiffSidebarNarrow, isChangesPanelCollapsed, setFilteredDiffFiles])
+  const handleMarkAllUnviewed = useCallback(() => {
+    diffViewRef.current?.markAllUnviewed()
+  }, [])
 
   // Initialize store when chat data loads
   useEffect(() => {
@@ -5123,138 +5705,65 @@ Make sure to preserve all functionality from both branches when resolving confli
 
         {/* Diff View - hidden on mobile fullscreen and when diff is not available */}
         {/* Supports three display modes: side-peek (sidebar), center-peek (dialog), full-page */}
-        {canOpenDiff && !isMobileFullscreen && (() => {
-          const handleCloseDiff = () => {
-            setIsDiffSidebarOpen(false)
-            // Note: Don't clear filteredDiffFiles here - it causes re-render during exit animation
-            // filteredDiffFiles is cleared in AgentDiffView's cleanup effect when it unmounts
-            setFilteredSubChatId(null)
-          }
-
-          // Width for responsive layouts - use stored width for sidebar, fixed for dialog/fullpage
-          const effectiveWidth = diffDisplayMode === "side-peek"
-            ? diffSidebarWidth
-            : diffDisplayMode === "center-peek"
-              ? 1200
-              : window.innerWidth
-
-          const diffViewContent = (
-            <div
-              ref={diffSidebarRef}
-              className="flex flex-col h-full min-w-0 overflow-hidden"
-            >
-              {/* Unified Header - branch selector, fetch, review, PR actions, close */}
-              {worktreePath && (
-                <DiffSidebarHeader
-                  worktreePath={worktreePath}
-                  currentBranch={branchData?.current ?? ""}
-                  diffStats={diffStats}
-                  sidebarWidth={effectiveWidth}
-                  pushCount={gitStatus?.pushCount ?? 0}
-                  pullCount={gitStatus?.pullCount ?? 0}
-                  hasUpstream={gitStatus?.hasUpstream ?? true}
-                  isSyncStatusLoading={isGitStatusLoading}
-                  aheadOfDefault={gitStatus?.ahead ?? 0}
-                  behindDefault={gitStatus?.behind ?? 0}
-                  onReview={handleReview}
-                  isReviewing={isReviewing}
-                  onCreatePr={handleCreatePr}
-                  isCreatingPr={isCreatingPr}
-                  onCreatePrWithAI={handleCreatePr}
-                  isCreatingPrWithAI={isCreatingPr}
-                  onMergePr={handleMergePr}
-                  isMergingPr={mergePrMutation.isPending}
-                  onClose={handleCloseDiff}
-                  onRefresh={() => refetchGitStatus()}
-                  hasPrNumber={hasPrNumber}
-                  isPrOpen={isPrOpen}
-                  hasMergeConflicts={hasMergeConflicts}
-                  onFixConflicts={handleFixConflicts}
-                  onExpandAll={() => diffViewRef.current?.expandAll()}
-                  onCollapseAll={() => diffViewRef.current?.collapseAll()}
-                  viewMode={diffMode}
-                  onViewModeChange={setDiffMode}
-                  isDesktop={isDesktop}
-                  isFullscreen={isFullscreen}
-                  displayMode={diffDisplayMode}
-                  onDisplayModeChange={setDiffDisplayMode}
-                />
-              )}
-
-              {/* Content: file list + diff view - vertical when narrow */}
-              <DiffSidebarContent
-                worktreePath={worktreePath}
-                selectedFilePath={selectedFilePath}
-                onFileSelect={handleDiffFileSelect}
-                chatId={chatId}
-                sandboxId={sandboxId}
-                repository={repository}
-                diffStats={diffStats}
-                setDiffStats={setDiffStats}
-                diffContent={diffContent}
-                parsedFileDiffs={parsedFileDiffs}
-                prefetchedFileContents={prefetchedFileContents}
-                setDiffCollapseState={setDiffCollapseState}
-                diffViewRef={diffViewRef}
-                agentChat={agentChat}
-                sidebarWidth={effectiveWidth}
-                onCommitWithAI={handleCommitToPr}
-                isCommittingWithAI={isCommittingToPr}
-                diffMode={diffMode}
-                setDiffMode={setDiffMode}
-                onCreatePr={handleCreatePr}
-                onCommitSuccess={handleCommitSuccess}
-                subChats={subChatsWithFiles}
-                initialSubChatFilter={filteredSubChatId}
-              />
-            </div>
-          )
-
-          // Render based on display mode
-          if (diffDisplayMode === "side-peek") {
-            return (
-              <ResizableSidebar
-                isOpen={isDiffSidebarOpen}
-                onClose={handleCloseDiff}
-                widthAtom={agentsDiffSidebarWidthAtom}
-                minWidth={320}
-                side="right"
-                animationDuration={0}
-                initialWidth={0}
-                exitWidth={0}
-                showResizeTooltip={true}
-                className="bg-background border-l"
-                style={{ borderLeftWidth: "0.5px", overflow: "hidden" }}
-              >
-                {diffViewContent}
-              </ResizableSidebar>
-            )
-          }
-
-          if (diffDisplayMode === "center-peek") {
-            return (
-              <DiffCenterPeekDialog
-                isOpen={isDiffSidebarOpen}
-                onClose={handleCloseDiff}
-              >
-                {diffViewContent}
-              </DiffCenterPeekDialog>
-            )
-          }
-
-          if (diffDisplayMode === "full-page") {
-            return (
-              <DiffFullPageView
-                isOpen={isDiffSidebarOpen}
-                onClose={handleCloseDiff}
-              >
-                {diffViewContent}
-              </DiffFullPageView>
-            )
-          }
-
-          return null
-        })()}
+        {/* Wrapped in DiffStateProvider to isolate diff state and prevent ChatView re-renders */}
+        {canOpenDiff && !isMobileFullscreen && (
+          <DiffStateProvider
+            isDiffSidebarOpen={isDiffSidebarOpen}
+            parsedFileDiffs={parsedFileDiffs}
+            isDiffSidebarNarrow={isDiffSidebarNarrow}
+            setIsDiffSidebarOpen={setIsDiffSidebarOpen}
+            setDiffStats={setDiffStats}
+            setDiffContent={setDiffContent}
+            setParsedFileDiffs={setParsedFileDiffs}
+            setPrefetchedFileContents={setPrefetchedFileContents}
+            fetchDiffStats={fetchDiffStats}
+          >
+            <DiffSidebarRenderer
+              worktreePath={worktreePath}
+              chatId={chatId}
+              sandboxId={sandboxId}
+              repository={repository}
+              diffStats={diffStats}
+              diffContent={diffContent}
+              parsedFileDiffs={parsedFileDiffs}
+              prefetchedFileContents={prefetchedFileContents}
+              setDiffCollapseState={setDiffCollapseState}
+              diffViewRef={diffViewRef}
+              diffSidebarRef={diffSidebarRef}
+              agentChat={agentChat}
+              branchData={branchData}
+              gitStatus={gitStatus}
+              isGitStatusLoading={isGitStatusLoading}
+              isDiffSidebarOpen={isDiffSidebarOpen}
+              diffDisplayMode={diffDisplayMode}
+              diffSidebarWidth={diffSidebarWidth}
+              handleReview={handleReview}
+              isReviewing={isReviewing}
+              handleCreatePr={handleCreatePr}
+              isCreatingPr={isCreatingPr}
+              handleMergePr={handleMergePr}
+              mergePrMutation={mergePrMutation}
+              handleRefreshGitStatus={handleRefreshGitStatus}
+              hasPrNumber={hasPrNumber}
+              isPrOpen={isPrOpen}
+              hasMergeConflicts={hasMergeConflicts}
+              handleFixConflicts={handleFixConflicts}
+              handleExpandAll={handleExpandAll}
+              handleCollapseAll={handleCollapseAll}
+              diffMode={diffMode}
+              setDiffMode={setDiffMode}
+              handleMarkAllViewed={handleMarkAllViewed}
+              handleMarkAllUnviewed={handleMarkAllUnviewed}
+              isDesktop={isDesktop}
+              isFullscreen={isFullscreen}
+              setDiffDisplayMode={setDiffDisplayMode}
+              handleCommitToPr={handleCommitToPr}
+              isCommittingToPr={isCommittingToPr}
+              subChatsWithFiles={subChatsWithFiles}
+              setDiffStats={setDiffStats}
+            />
+          </DiffStateProvider>
+        )}
 
         {/* Preview Sidebar - hidden on mobile fullscreen and when preview is not available */}
         {canOpenPreview && !isMobileFullscreen && (

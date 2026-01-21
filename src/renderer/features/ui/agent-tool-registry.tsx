@@ -90,7 +90,18 @@ export const AgentToolRegistry: Record<string, ToolMeta> = {
       const isPending =
         part.state !== "output-available" && part.state !== "output-error"
       if (isPending) return "Grepping"
+      // Handle different output modes:
+      // - "files_with_matches" mode: numFiles > 0, filenames is populated
+      // - "content" mode: numFiles = 0, but numLines > 0 and content has matches
+      const mode = part.output?.mode
       const numFiles = part.output?.numFiles || 0
+      const numLines = part.output?.numLines || 0
+
+      if (mode === "content") {
+        // In content mode, numFiles is always 0, use numLines instead
+        return numLines > 0 ? `Found ${numLines} matches` : "No matches"
+      }
+
       return numFiles > 0 ? `Grepped ${numFiles} files` : "No matches"
     },
     subtitle: (part) => {

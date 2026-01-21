@@ -39,6 +39,8 @@ export const MENTION_PREFIXES = {
   SKILL: "skill:",
   AGENT: "agent:",
   TOOL: "tool:", // MCP tools
+  QUOTE: "quote:", // Selected text from assistant messages
+  DIFF: "diff:", // Selected text from diff sidebar
 } as const
 
 type TriggerPayload = {

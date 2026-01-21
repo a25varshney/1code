@@ -725,11 +725,8 @@ export const chatsRouter = router({
       }
       const cached = gitCache.getParsedDiff<ParsedDiffResponse>(chat.worktreePath, diffHash)
       if (cached) {
-        console.log("[getParsedDiff] Cache hit for:", chat.worktreePath)
         return cached
       }
-
-      console.log("[getParsedDiff] Cache miss, parsing:", chat.worktreePath)
 
       // 3. Parse diff into files
       const files = splitUnifiedDiffByFile(result.diff || "")
@@ -791,7 +788,6 @@ export const chatsRouter = router({
 
       // 6. Store in cache
       gitCache.setParsedDiff(chat.worktreePath, diffHash, response)
-
       return response
     }),
 
@@ -1349,11 +1345,12 @@ export const chatsRouter = router({
           const msg = messages[i]
           if (!msg) continue
 
-          // If user message says "Implement plan" (exact match), plan is already approved
+          // If user message says "Build plan" or "Implement plan" (exact match), plan is already approved
           if (msg.role === "user") {
             const textPart = msg.parts?.find((p) => p.type === "text")
             const text = textPart?.text || ""
-            if (text.trim().toLowerCase() === "implement plan") {
+            const normalizedText = text.trim().toLowerCase()
+            if (normalizedText === "implement plan" || normalizedText === "build plan") {
               break // Plan was approved, stop searching
             }
           }

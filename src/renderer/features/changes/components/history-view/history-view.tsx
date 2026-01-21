@@ -32,7 +32,7 @@ interface HistoryViewProps {
 	pushCount?: number;
 }
 
-export function HistoryView({
+export const HistoryView = memo(function HistoryView({
 	worktreePath,
 	selectedCommitHash,
 	selectedFilePath,
@@ -68,44 +68,9 @@ export function HistoryView({
 		},
 	);
 
-	// Log commits loaded
-	useEffect(() => {
-		console.log("[HistoryView] Commits loaded:", {
-			count: commits?.length,
-			commits: commits?.map((c) => ({ hash: c.hash, message: c.message })),
-		});
-	}, [commits]);
-
-	// Log selected commit changed
-	useEffect(() => {
-		console.log("[HistoryView] Selected commit changed:", {
-			selectedCommitHash,
-			worktreePath,
-			queryEnabled: !!worktreePath && !!selectedCommitHash,
-		});
-	}, [selectedCommitHash, worktreePath]);
-
-	// Log commit files loaded
-	useEffect(() => {
-		console.log("[HistoryView] Commit files loaded:", {
-			selectedCommitHash,
-			filesCount: commitFiles?.length,
-			files: commitFiles?.map((f) => ({ path: f.path, status: f.status })),
-			isLoading: isLoadingFiles,
-			error: filesError?.message,
-		});
-	}, [commitFiles, isLoadingFiles, filesError, selectedCommitHash]);
-
 	// Auto-select first commit when history loads (if none selected)
 	useEffect(() => {
-		console.log("[HistoryView] Auto-select check:", {
-			hasCommits: commits && commits.length > 0,
-			hasSelectedCommitHash: !!selectedCommitHash,
-			hasOnCommitSelect: !!onCommitSelect,
-		});
-
 		if (commits && commits.length > 0 && !selectedCommitHash && onCommitSelect) {
-			console.log("[HistoryView] Auto-selecting first commit:", commits[0]);
 			onCommitSelect(commits[0]);
 		}
 	}, [commits, selectedCommitHash, onCommitSelect]);
@@ -187,7 +152,7 @@ export function HistoryView({
 			))}
 		</div>
 	);
-}
+});
 
 const HistoryCommitItem = memo(function HistoryCommitItem({
 	commit,
@@ -268,8 +233,6 @@ const CommitFileItem = memo(function CommitFileItem({
 	isSelected: boolean;
 	onClick: () => void;
 }) {
-	console.log("[CommitFileItem] RENDERING COMPONENT:", { path: file.path, isSelected });
-
 	const fileName = file.path.split("/").pop() || file.path;
 	const dirPath = file.path.includes("/")
 		? file.path.substring(0, file.path.lastIndexOf("/"))

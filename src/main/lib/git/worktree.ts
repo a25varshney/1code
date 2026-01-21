@@ -911,16 +911,19 @@ export async function createWorktreeForChat(
 
 		await createWorktree(projectPath, branch, worktreePath, `origin/${baseBranch}`);
 
-		// Run worktree setup commands (install deps, copy envs, etc.)
-		// Don't fail worktree creation if setup fails, just log
-		try {
-			const setupResult = await executeWorktreeSetup(worktreePath, projectPath);
-			if (!setupResult.success) {
-				console.warn(`[worktree] Setup completed with errors: ${setupResult.errors.join(", ")}`);
-			}
-		} catch (setupError) {
-			console.warn(`[worktree] Setup failed: ${setupError}`);
-		}
+		// Run worktree setup commands in BACKGROUND (don't block chat creation)
+		// This allows the user to start chatting immediately while deps install
+		executeWorktreeSetup(worktreePath, projectPath)
+			.then((setupResult) => {
+				if (!setupResult.success) {
+					console.warn(`[worktree] Setup completed with errors: ${setupResult.errors.join(", ")}`);
+				} else {
+					console.log(`[worktree] Setup completed successfully for ${chatId}`);
+				}
+			})
+			.catch((setupError) => {
+				console.warn(`[worktree] Setup failed: ${setupError}`);
+			});
 
 		return { success: true, worktreePath, branch, baseBranch };
 	} catch (error) {
@@ -972,15 +975,36 @@ export async function getWorktreeDiff(
 				return true;
 			});
 
-			const untrackedDiff =
-				untrackedFiles.length > 0
-					? await git.diff([
+			// git diff --no-index only accepts 2 paths, so we need to diff each file separately
+			// Also, git diff --no-index returns exit code 1 when files differ, which simple-git treats as error
+			// So we use raw() to get the output regardless of exit code
+			const untrackedDiffs: string[] = [];
+			for (const file of untrackedFiles) {
+				try {
+					const fileDiff = await git.raw([
+						"diff",
 						"--no-color",
 						"--no-index",
 						"/dev/null",
-						...untrackedFiles,
-					])
-					: "";
+						file,
+					]);
+					if (fileDiff) {
+						untrackedDiffs.push(fileDiff);
+					}
+				} catch (error: unknown) {
+					// git diff --no-index returns exit code 1 when files differ
+					// simple-git throws but includes the diff output in the error
+					const gitError = error as { message?: string };
+					if (gitError.message && gitError.message.includes("diff --git")) {
+						// Extract the diff from the error message
+						const diffStart = gitError.message.indexOf("diff --git");
+						if (diffStart !== -1) {
+							untrackedDiffs.push(gitError.message.substring(diffStart));
+						}
+					}
+				}
+			}
+			const untrackedDiff = untrackedDiffs.join("\n");
 
 			const combinedDiff = [workingDiff, untrackedDiff]
 				.filter(Boolean)

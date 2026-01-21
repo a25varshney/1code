@@ -39,7 +39,8 @@ import { AgentContextIndicator, type MessageTokenData } from "../ui/agent-contex
 import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
 import { AgentTextContextItem } from "../ui/agent-text-context-item"
-import type { SelectedTextContext } from "../lib/queue-utils"
+import { AgentDiffTextContextItem } from "../ui/agent-diff-text-context-item"
+import type { SelectedTextContext, DiffTextContext } from "../lib/queue-utils"
 import type { UploadedImage, UploadedFile } from "../hooks/use-agents-file-upload"
 import { handlePasteEvent } from "../utils/paste-text"
 import {
@@ -122,6 +123,9 @@ export interface ChatInputAreaProps {
   // Text context from selected assistant message text
   textContexts: SelectedTextContext[]
   onRemoveTextContext: (id: string) => void
+  // Diff text context from selected diff sidebar text
+  diffTextContexts?: DiffTextContext[]
+  onRemoveDiffTextContext?: (id: string) => void
   // Pre-computed token data for context indicator (avoids passing messages array)
   messageTokenData: MessageTokenData
   // Context
@@ -140,6 +144,8 @@ export interface ChatInputAreaProps {
   firstQueueItemId?: string
   // Callback to notify parent when input has content (for custom text with questions)
   onInputContentChange?: (hasContent: boolean) => void
+  // Callback to send message with question answer (Enter sends immediately, not to queue)
+  onSubmitWithQuestionAnswer?: () => void
 }
 
 /**
@@ -184,7 +190,8 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.onRemoveImage !== nextProps.onRemoveImage ||
     prevProps.onRemoveFile !== nextProps.onRemoveFile ||
     prevProps.onRemoveTextContext !== nextProps.onRemoveTextContext ||
-    prevProps.onInputContentChange !== nextProps.onInputContentChange
+    prevProps.onInputContentChange !== nextProps.onInputContentChange ||
+    prevProps.onSubmitWithQuestionAnswer !== nextProps.onSubmitWithQuestionAnswer
   ) {
     return false
   }
@@ -198,6 +205,18 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
   }
   for (let i = 0; i < prevProps.textContexts.length; i++) {
     if (prevProps.textContexts[i]?.id !== nextProps.textContexts[i]?.id) {
+      return false
+    }
+  }
+
+  // Compare diffTextContexts array - by length and ids
+  const prevDiff = prevProps.diffTextContexts || []
+  const nextDiff = nextProps.diffTextContexts || []
+  if (prevDiff.length !== nextDiff.length) {
+    return false
+  }
+  for (let i = 0; i < prevDiff.length; i++) {
+    if (prevDiff[i]?.id !== nextDiff[i]?.id) {
       return false
     }
   }
@@ -288,6 +307,8 @@ export const ChatInputArea = memo(function ChatInputArea({
   isUploading,
   textContexts,
   onRemoveTextContext,
+  diffTextContexts,
+  onRemoveDiffTextContext,
   messageTokenData,
   subChatId,
   parentChatId,
@@ -301,6 +322,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   onSendFromQueue,
   firstQueueItemId,
   onInputContentChange,
+  onSubmitWithQuestionAnswer,
 }: ChatInputAreaProps) {
   // Local state - changes here don't re-render parent
   const [hasContent, setHasContent] = useState(false)
@@ -414,7 +436,8 @@ export const ChatInputArea = memo(function ChatInputArea({
       draft.trim() ||
       images.length > 0 ||
       files.length > 0 ||
-      textContexts.length > 0
+      textContexts.length > 0 ||
+      (diffTextContexts?.length ?? 0) > 0
 
     if (hasContent) {
       await saveSubChatDraftWithAttachments(chatId, subChatIdValue, draft, {
@@ -425,7 +448,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     } else {
       clearSubChatDraft(chatId, subChatIdValue)
     }
-  }, [editorRef, images, files, textContexts])
+  }, [editorRef, images, files, textContexts, diffTextContexts])
 
   // Content change handler
   const handleContentChange = useCallback((newHasContent: boolean) => {
@@ -435,6 +458,22 @@ export const ChatInputArea = memo(function ChatInputArea({
     const draft = editorRef.current?.getValue() || ""
     currentDraftTextRef.current = draft
   }, [editorRef, onInputContentChange])
+
+  // Editor submit handler - handles Enter key with queue logic
+  // If input is empty and queue has items, stop stream and send first from queue
+  const handleEditorSubmit = useCallback(async () => {
+    const inputValue = editorRef.current?.getValue() || ""
+    const hasText = inputValue.trim().length > 0
+    const hasAttachments = images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0
+
+    if (!hasText && !hasAttachments && queueLength > 0 && onSendFromQueue && firstQueueItemId) {
+      // Input empty, queue has items - stop stream and send from queue
+      await onStop()
+      onSendFromQueue(firstQueueItemId)
+    } else {
+      onSend()
+    }
+  }, [editorRef, images, files, textContexts, diffTextContexts, queueLength, onSendFromQueue, firstQueueItemId, onStop, onSend])
 
   // Mention select handler
   const handleMentionSelect = useCallback((mention: FileMentionOption) => {
@@ -594,7 +633,7 @@ export const ChatInputArea = memo(function ChatInputArea({
               maxHeight={200}
               onSubmit={onSend}
               contextItems={
-                images.length > 0 || files.length > 0 || textContexts.length > 0 ? (
+                images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0 ? (
                   <div className="flex flex-wrap gap-[6px]">
                     {(() => {
                       // Build allImages array for gallery navigation
@@ -638,6 +677,17 @@ export const ChatInputArea = memo(function ChatInputArea({
                         onRemove={() => onRemoveTextContext(tc.id)}
                       />
                     ))}
+                    {diffTextContexts?.map((dtc) => (
+                      <AgentDiffTextContextItem
+                        key={dtc.id}
+                        text={dtc.text}
+                        preview={dtc.preview}
+                        filePath={dtc.filePath}
+                        lineNumber={dtc.lineNumber}
+                        lineType={dtc.lineType}
+                        onRemove={onRemoveDiffTextContext ? () => onRemoveDiffTextContext(dtc.id) : undefined}
+                      />
+                    ))}
                   </div>
                 ) : null
               }
@@ -665,10 +715,10 @@ export const ChatInputArea = memo(function ChatInputArea({
                   onSlashTrigger={handleSlashTrigger}
                   onCloseSlashTrigger={handleCloseSlashTrigger}
                   onContentChange={handleContentChange}
-                  onSubmit={onSend}
+                  onSubmit={onSubmitWithQuestionAnswer || handleEditorSubmit}
                   onForceSubmit={onForceSend}
                   onShiftTab={() => setIsPlanMode((prev) => !prev)}
-                  placeholder="Plan, @ for context, / for commands"
+                  placeholder={isStreaming ? "Add follow up" : "Plan, @ for context, / for commands"}
                   className={cn(
                     "bg-transparent max-h-[200px] overflow-y-auto p-1",
                     isMobile && "min-h-[56px]",
@@ -974,6 +1024,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                     images.length === 0 &&
                     files.length === 0 &&
                     textContexts.length === 0 &&
+                    (diffTextContexts?.length ?? 0) === 0 &&
                     !isStreaming ? (
                       <Button
                         onClick={onApprovePlan}
@@ -994,10 +1045,11 @@ export const ChatInputArea = memo(function ChatInputArea({
                             images.length === 0 &&
                             files.length === 0 &&
                             textContexts.length === 0 &&
+                            (diffTextContexts?.length ?? 0) === 0 &&
                             queueLength === 0) ||
                           isUploading
                         }
-                        hasContent={hasContent || images.length > 0 || files.length > 0 || textContexts.length > 0}
+                        hasContent={hasContent || images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0}
                         onClick={() => {
                           // If input is empty and queue has items, send first queue item
                           if (!hasContent && images.length === 0 && files.length === 0 && queueLength > 0 && onSendFromQueue && firstQueueItemId) {
