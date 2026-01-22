@@ -26,45 +26,45 @@ import { buildAgentsOption } from "./agent-utils"
  * Returns the cleaned prompt and lists of mentioned agents/skills/tools
  */
 function parseMentions(prompt: string): {
-  cleanedPrompt: string
-  agentMentions: string[]
-  skillMentions: string[]
-  fileMentions: string[]
-  folderMentions: string[]
-  toolMentions: string[]
+  cleanedPrompt: string;
+  agentMentions: string[];
+  skillMentions: string[];
+  fileMentions: string[];
+  folderMentions: string[];
+  toolMentions: string[];
 } {
-  const agentMentions: string[] = []
-  const skillMentions: string[] = []
-  const fileMentions: string[] = []
-  const folderMentions: string[] = []
-  const toolMentions: string[] = []
+  const agentMentions: string[] = [];
+  const skillMentions: string[] = [];
+  const fileMentions: string[] = [];
+  const folderMentions: string[] = [];
+  const toolMentions: string[] = [];
 
   // Match @[prefix:name] pattern
-  const mentionRegex = /@\[(file|folder|skill|agent|tool):([^\]]+)\]/g
-  let match
+  const mentionRegex = /@\[(file|folder|skill|agent|tool):([^\]]+)\]/g;
+  let match;
 
   while ((match = mentionRegex.exec(prompt)) !== null) {
-    const [, type, name] = match
+    const [, type, name] = match;
     switch (type) {
       case "agent":
-        agentMentions.push(name)
-        break
+        agentMentions.push(name);
+        break;
       case "skill":
-        skillMentions.push(name)
-        break
+        skillMentions.push(name);
+        break;
       case "file":
-        fileMentions.push(name)
-        break
+        fileMentions.push(name);
+        break;
       case "folder":
-        folderMentions.push(name)
-        break
+        folderMentions.push(name);
+        break;
       case "tool":
         // Validate tool name format: only alphanumeric, underscore, hyphen allowed
         // This prevents prompt injection via malicious tool names
         if (/^[a-zA-Z0-9_-]+$/.test(name)) {
-          toolMentions.push(name)
+          toolMentions.push(name);
         }
-        break
+        break;
     }
   }
 
@@ -74,18 +74,25 @@ function parseMentions(prompt: string): {
     .replace(/@\[agent:[^\]]+\]/g, "")
     .replace(/@\[skill:[^\]]+\]/g, "")
     .replace(/@\[tool:[^\]]+\]/g, "")
-    .trim()
+    .trim();
 
   // Add tool usage hints if tools were mentioned
   // Tool names are already validated to contain only safe characters
   if (toolMentions.length > 0) {
     const toolHints = toolMentions
       .map((t) => `Use the ${t} tool for this request.`)
-      .join(" ")
-    cleanedPrompt = `${toolHints}\n\n${cleanedPrompt}`
+      .join(" ");
+    cleanedPrompt = `${toolHints}\n\n${cleanedPrompt}`;
   }
 
-  return { cleanedPrompt, agentMentions, skillMentions, fileMentions, folderMentions, toolMentions }
+  return {
+    cleanedPrompt,
+    agentMentions,
+    skillMentions,
+    fileMentions,
+    folderMentions,
+    toolMentions,
+  };
 }
 
 /**
@@ -93,10 +100,10 @@ function parseMentions(prompt: string): {
  */
 function decryptToken(encrypted: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
-    return Buffer.from(encrypted, "base64").toString("utf-8")
+    return Buffer.from(encrypted, "base64").toString("utf-8");
   }
-  const buffer = Buffer.from(encrypted, "base64")
-  return safeStorage.decryptString(buffer)
+  const buffer = Buffer.from(encrypted, "base64");
+  return safeStorage.decryptString(buffer);
 }
 
 /**
@@ -105,28 +112,29 @@ function decryptToken(encrypted: string): string {
  */
 function getClaudeCodeToken(): string | null {
   try {
-    const db = getDatabase()
+    const db = getDatabase();
     const cred = db
       .select()
       .from(claudeCodeCredentials)
       .where(eq(claudeCodeCredentials.id, "default"))
-      .get()
+      .get();
 
     if (!cred?.oauthToken) {
-      console.log("[claude] No Claude Code credentials found")
-      return null
+      console.log("[claude] No Claude Code credentials found");
+      return null;
     }
 
-    return decryptToken(cred.oauthToken)
+    return decryptToken(cred.oauthToken);
   } catch (error) {
-    console.error("[claude] Error getting Claude Code token:", error)
-    return null
+    console.error("[claude] Error getting Claude Code token:", error);
+    return null;
   }
 }
 
 // Dynamic import for ESM module - CACHED to avoid re-importing on every message
 let cachedClaudeQuery: typeof import("@anthropic-ai/claude-agent-sdk").query | null = null
 const getClaudeQuery = async () => {
+
   if (cachedClaudeQuery) {
     return cachedClaudeQuery
   }
@@ -135,7 +143,6 @@ const getClaudeQuery = async () => {
   return cachedClaudeQuery
 }
 
-// Active sessions for cancellation (onAbort handles stash + abort + restore)
 // Active sessions for cancellation
 const activeSessions = new Map<string, AbortController>()
 
@@ -157,7 +164,6 @@ interface CachedMcpStatus {
   status: string
   cachedAt: number
 }
-
 interface McpCacheData {
   version: number
   entries: Record<string, {
@@ -173,14 +179,14 @@ let diskCacheLastLoadTime = 0 // Track when disk cache was last loaded
 const pendingToolApprovals = new Map<
   string,
   {
-    subChatId: string
+    subChatId: string;
     resolve: (decision: {
-      approved: boolean
-      message?: string
-      updatedInput?: unknown
-    }) => void
+      approved: boolean;
+      message?: string;
+      updatedInput?: unknown;
+    }) => void;
   }
->()
+>();
 
 const PLAN_MODE_BLOCKED_TOOLS = new Set([
   "Bash",
@@ -189,20 +195,20 @@ const PLAN_MODE_BLOCKED_TOOLS = new Set([
 
 const clearPendingApprovals = (message: string, subChatId?: string) => {
   for (const [toolUseId, pending] of pendingToolApprovals) {
-    if (subChatId && pending.subChatId !== subChatId) continue
-    pending.resolve({ approved: false, message })
-    pendingToolApprovals.delete(toolUseId)
+    if (subChatId && pending.subChatId !== subChatId) continue;
+    pending.resolve({ approved: false, message });
+    pendingToolApprovals.delete(toolUseId);
   }
-}
+};
 
 // Image attachment schema
 const imageAttachmentSchema = z.object({
   base64Data: z.string(),
   mediaType: z.string(), // e.g. "image/png", "image/jpeg"
   filename: z.string().optional(),
-})
+});
 
-export type ImageAttachment = z.infer<typeof imageAttachmentSchema>
+export type ImageAttachment = z.infer<typeof imageAttachmentSchema>;
 
 /**
  * Load MCP status cache from disk
@@ -468,51 +474,53 @@ export const claudeRouter = router({
     )
     .subscription(({ input }) => {
       return observable<UIMessageChunk>((emit) => {
-        const abortController = new AbortController()
-        const streamId = crypto.randomUUID()
-        activeSessions.set(input.subChatId, abortController)
+        const abortController = new AbortController();
+        const streamId = crypto.randomUUID();
+        activeSessions.set(input.subChatId, abortController);
 
         // Stream debug logging
-        const subId = input.subChatId.slice(-8) // Short ID for logs
-        const streamStart = Date.now()
-        let chunkCount = 0
-        let lastChunkType = ""
+        const subId = input.subChatId.slice(-8); // Short ID for logs
+        const streamStart = Date.now();
+        let chunkCount = 0;
+        let lastChunkType = "";
         // Shared sessionId for cleanup to save on abort
-        let currentSessionId: string | null = null
-        console.log(`[SD] M:START sub=${subId} stream=${streamId.slice(-8)} mode=${input.mode}`)
+        let currentSessionId: string | null = null;
+        console.log(
+          `[SD] M:START sub=${subId} stream=${streamId.slice(-8)} mode=${input.mode}`,
+        );
 
         // Track if observable is still active (not unsubscribed)
-        let isObservableActive = true
+        let isObservableActive = true;
 
         // Helper to safely emit (no-op if already unsubscribed)
         const safeEmit = (chunk: UIMessageChunk) => {
-          if (!isObservableActive) return false
+          if (!isObservableActive) return false;
           try {
-            emit.next(chunk)
-            return true
+            emit.next(chunk);
+            return true;
           } catch {
-            isObservableActive = false
-            return false
+            isObservableActive = false;
+            return false;
           }
-        }
+        };
 
         // Helper to safely complete (no-op if already closed)
         const safeComplete = () => {
           try {
-            emit.complete()
+            emit.complete();
           } catch {
             // Already completed or closed
           }
-        }
+        };
 
         // Helper to emit error to frontend
         const emitError = (error: unknown, context: string) => {
           const errorMessage =
-            error instanceof Error ? error.message : String(error)
-          const errorStack = error instanceof Error ? error.stack : undefined
+            error instanceof Error ? error.message : String(error);
+          const errorStack = error instanceof Error ? error.stack : undefined;
 
-          console.error(`[claude] ${context}:`, errorMessage)
-          if (errorStack) console.error("[claude] Stack:", errorStack)
+          console.error(`[claude] ${context}:`, errorMessage);
+          if (errorStack) console.error("[claude] Stack:", errorStack);
 
           // Send detailed error to frontend (safely)
           safeEmit({
@@ -527,21 +535,21 @@ export const claudeRouter = router({
                 PATH: process.env.PATH?.slice(0, 200),
               },
             }),
-          } as UIMessageChunk)
-        }
+          } as UIMessageChunk);
+        };
 
-        ;(async () => {
+        (async () => {
           try {
-            const db = getDatabase()
+            const db = getDatabase();
 
             // 1. Get existing messages from DB
             const existing = db
               .select()
               .from(subChats)
               .where(eq(subChats.id, input.subChatId))
-              .get()
-            const existingMessages = JSON.parse(existing?.messages || "[]")
-            const existingSessionId = existing?.sessionId || null
+              .get();
+            const existingMessages = JSON.parse(existing?.messages || "[]");
+            const existingSessionId = existing?.sessionId || null;
 
             // Get resumeSessionAt UUID from the last assistant message (for rollback)
             const lastAssistantMsg = [...existingMessages].reverse().find(
@@ -551,25 +559,25 @@ export const claudeRouter = router({
             const historyEnabled = input.historyEnabled === true
 
             // Check if last message is already this user message (avoid duplicate)
-            const lastMsg = existingMessages[existingMessages.length - 1]
+            const lastMsg = existingMessages[existingMessages.length - 1];
             const isDuplicate =
               lastMsg?.role === "user" &&
-              lastMsg?.parts?.[0]?.text === input.prompt
+              lastMsg?.parts?.[0]?.text === input.prompt;
 
             // 2. Create user message and save BEFORE streaming (skip if duplicate)
-            let userMessage: any
-            let messagesToSave: any[]
+            let userMessage: any;
+            let messagesToSave: any[];
 
             if (isDuplicate) {
-              userMessage = lastMsg
-              messagesToSave = existingMessages
+              userMessage = lastMsg;
+              messagesToSave = existingMessages;
             } else {
               userMessage = {
                 id: crypto.randomUUID(),
                 role: "user",
                 parts: [{ type: "text", text: input.prompt }],
-              }
-              messagesToSave = [...existingMessages, userMessage]
+              };
+              messagesToSave = [...existingMessages, userMessage];
 
               db.update(subChats)
                 .set({
@@ -578,7 +586,7 @@ export const claudeRouter = router({
                   updatedAt: new Date(),
                 })
                 .where(eq(subChats.id, input.subChatId))
-                .run()
+                .run();
             }
 
             // 2.5. AUTO-FALLBACK: Check internet and switch to Ollama if offline
@@ -600,15 +608,17 @@ export const claudeRouter = router({
             // (emitting text-delta without text-start breaks UI text rendering)
 
             // 3. Get Claude SDK
-            let claudeQuery
+            let claudeQuery;
             try {
-              claudeQuery = await getClaudeQuery()
+              claudeQuery = await getClaudeQuery();
             } catch (sdkError) {
-              emitError(sdkError, "Failed to load Claude SDK")
-              console.log(`[SD] M:END sub=${subId} reason=sdk_load_error n=${chunkCount}`)
-              safeEmit({ type: "finish" } as UIMessageChunk)
-              safeComplete()
-              return
+              emitError(sdkError, "Failed to load Claude SDK");
+              console.log(
+                `[SD] M:END sub=${subId} reason=sdk_load_error n=${chunkCount}`,
+              );
+              safeEmit({ type: "finish" } as UIMessageChunk);
+              safeComplete();
+              return;
             }
 
             const transform = createTransformer({
@@ -617,49 +627,56 @@ export const claudeRouter = router({
             })
 
             // 4. Setup accumulation state
-            const parts: any[] = []
-            let currentText = ""
-            let metadata: any = {}
+            const parts: any[] = [];
+            let currentText = "";
+            let metadata: any = {};
 
             // Capture stderr from Claude process for debugging
-            const stderrLines: string[] = []
+            const stderrLines: string[] = [];
 
             // Parse mentions from prompt (agents, skills, files, folders)
-            const { cleanedPrompt, agentMentions, skillMentions } = parseMentions(input.prompt)
+            const { cleanedPrompt, agentMentions, skillMentions } =
+              parseMentions(input.prompt);
 
             // Build agents option for SDK (proper registration via options.agents)
-            const agentsOption = await buildAgentsOption(agentMentions, input.cwd)
+            const agentsOption = await buildAgentsOption(
+              agentMentions,
+              input.cwd,
+            );
 
             // Log if agents were mentioned
             if (agentMentions.length > 0) {
-              console.log(`[claude] Registering agents via SDK:`, Object.keys(agentsOption))
+              console.log(
+                `[claude] Registering agents via SDK:`,
+                Object.keys(agentsOption),
+              );
             }
 
             // Log if skills were mentioned
             if (skillMentions.length > 0) {
-              console.log(`[claude] Skills mentioned:`, skillMentions)
+              console.log(`[claude] Skills mentioned:`, skillMentions);
             }
 
             // Build final prompt with skill instructions if needed
-            let finalPrompt = cleanedPrompt
+            let finalPrompt = cleanedPrompt;
 
             // Handle empty prompt when only mentions are present
             if (!finalPrompt.trim()) {
               if (agentMentions.length > 0 && skillMentions.length > 0) {
-                finalPrompt = `Use the ${agentMentions.join(", ")} agent(s) and invoke the "${skillMentions.join('", "')}" skill(s) using the Skill tool for this task.`
+                finalPrompt = `Use the ${agentMentions.join(", ")} agent(s) and invoke the "${skillMentions.join('", "')}" skill(s) using the Skill tool for this task.`;
               } else if (agentMentions.length > 0) {
-                finalPrompt = `Use the ${agentMentions.join(", ")} agent(s) for this task.`
+                finalPrompt = `Use the ${agentMentions.join(", ")} agent(s) for this task.`;
               } else if (skillMentions.length > 0) {
-                finalPrompt = `Invoke the "${skillMentions.join('", "')}" skill(s) using the Skill tool for this task.`
+                finalPrompt = `Invoke the "${skillMentions.join('", "')}" skill(s) using the Skill tool for this task.`;
               }
             } else if (skillMentions.length > 0) {
               // Append skill instruction to existing prompt
-              finalPrompt = `${finalPrompt}\n\nUse the "${skillMentions.join('", "')}" skill(s) for this task.`
+              finalPrompt = `${finalPrompt}\n\nUse the "${skillMentions.join('", "')}" skill(s) for this task.`;
             }
 
             // Build prompt: if there are images, create an AsyncIterable<SDKUserMessage>
             // Otherwise use simple string prompt
-            let prompt: string | AsyncIterable<any> = finalPrompt
+            let prompt: string | AsyncIterable<any> = finalPrompt;
 
             if (input.images && input.images.length > 0) {
               // Create message content array with images first, then text
@@ -672,14 +689,14 @@ export const claudeRouter = router({
                     data: img.base64Data,
                   },
                 })),
-              ]
+              ];
 
               // Add text if present
               if (finalPrompt.trim()) {
                 messageContent.push({
                   type: "text" as const,
                   text: finalPrompt,
-                })
+                });
               }
 
               // Create an async generator that yields a single SDKUserMessage
@@ -691,10 +708,10 @@ export const claudeRouter = router({
                     content: messageContent,
                   },
                   parent_tool_use_id: null,
-                }
+                };
               }
 
-              prompt = createPromptWithImages()
+              prompt = createPromptWithImages();
             }
 
             // Build full environment for Claude SDK (includes HOME, PATH, etc.)
@@ -711,7 +728,7 @@ export const claudeRouter = router({
 
             // Debug logging in dev
             if (process.env.NODE_ENV !== "production") {
-              logClaudeEnv(claudeEnv, `[${input.subChatId}] `)
+              logClaudeEnv(claudeEnv, `[${input.subChatId}] `);
             }
 
             // Create isolated config directory per subChat to prevent session contamination
@@ -725,13 +742,13 @@ export const claudeRouter = router({
             )
 
             // MCP servers to pass to SDK (read from ~/.claude.json)
-            let mcpServersForSdk: Record<string, any> | undefined
+            let mcpServersForSdk: Record<string, any> | undefined;
 
             // Ensure isolated config dir exists and symlink skills/agents from ~/.claude/
             // This is needed because SDK looks for skills at $CLAUDE_CONFIG_DIR/skills/
             // OPTIMIZATION: Only create symlinks once per subChatId (cached)
             try {
-              await fs.mkdir(isolatedConfigDir, { recursive: true })
+              await fs.mkdir(isolatedConfigDir, { recursive: true });
 
               // Only create symlinks if not already created for this config dir
               const cacheKey = isUsingOllama ? input.chatId : input.subChatId
@@ -748,17 +765,6 @@ export const claudeRouter = router({
                   const skillsTargetExists = await fs.lstat(skillsTarget).then(() => true).catch(() => false)
                   if (skillsSourceExists && !skillsTargetExists) {
                     await fs.symlink(skillsSource, skillsTarget, "dir")
-                  }
-                } catch (symlinkErr) {
-                  // Ignore symlink errors (might already exist or permission issues)
-                }
-
-                // Symlink agents directory if source exists and target doesn't
-                try {
-                  const agentsSourceExists = await fs.stat(agentsSource).then(() => true).catch(() => false)
-                  const agentsTargetExists = await fs.lstat(agentsTarget).then(() => true).catch(() => false)
-                  if (agentsSourceExists && !agentsTargetExists) {
-                    await fs.symlink(agentsSource, agentsTarget, "dir")
                   }
                 } catch (symlinkErr) {
                   // Ignore symlink errors (might already exist or permission issues)
@@ -803,10 +809,13 @@ export const claudeRouter = router({
                   }
                 }
               } catch (configErr) {
-                console.error(`[claude] Failed to read MCP config:`, configErr)
+                console.error(`[claude] Failed to read MCP config:`, configErr);
               }
             } catch (mkdirErr) {
-              console.error(`[claude] Failed to setup isolated config dir:`, mkdirErr)
+              console.error(
+                `[claude] Failed to setup isolated config dir:`,
+                mkdirErr,
+              );
             }
 
             // Build final env - only add OAuth token if we have one
@@ -817,16 +826,16 @@ export const claudeRouter = router({
               }),
               // Re-enable CLAUDE_CONFIG_DIR now that we properly map MCP configs
               CLAUDE_CONFIG_DIR: isolatedConfigDir,
-            }
+            };
 
             // Get bundled Claude binary path
-            const claudeBinaryPath = getBundledClaudeBinaryPath()
+            const claudeBinaryPath = getBundledClaudeBinaryPath();
 
             const resumeSessionId = input.sessionId || existingSessionId || undefined
 
             console.log(`[claude] Session ID to resume: ${resumeSessionId} (Existing: ${existingSessionId})`)
             console.log(`[claude] Resume at UUID: ${resumeAtUuid}`)
-            
+
             console.log(`[SD] Query options - cwd: ${input.cwd}, projectPath: ${input.projectPath || "(not set)"}, mcpServers: ${mcpServersForSdk ? Object.keys(mcpServersForSdk).join(", ") : "(none)"}`)
             if (finalCustomConfig) {
               const redactedConfig = {
@@ -929,7 +938,9 @@ export const claudeRouter = router({
               prompt,
               options: {
                 abortController, // Must be inside options!
-                cwd: input.cwd,
+                cwd: path.isAbsolute(input.cwd)
+                  ? input.cwd
+                  : path.join(input.projectPath || process.cwd(), input.cwd),
                 systemPrompt: {
                   type: "preset" as const,
                   preset: "claude_code" as const,
@@ -975,86 +986,88 @@ export const claudeRouter = router({
                     }
                   }
                   if (toolName === "AskUserQuestion") {
-                    const { toolUseID } = options
+                    const { toolUseID } = options;
                     // Emit to UI (safely in case observer is closed)
                     safeEmit({
                       type: "ask-user-question",
                       toolUseId: toolUseID,
                       questions: (toolInput as any).questions,
-                    } as UIMessageChunk)
+                    } as UIMessageChunk);
 
                     // Wait for response (60s timeout)
                     const response = await new Promise<{
-                      approved: boolean
-                      message?: string
-                      updatedInput?: unknown
+                      approved: boolean;
+                      message?: string;
+                      updatedInput?: unknown;
                     }>((resolve) => {
                       const timeoutId = setTimeout(() => {
-                        pendingToolApprovals.delete(toolUseID)
+                        pendingToolApprovals.delete(toolUseID);
                         // Emit chunk to notify UI that the question has timed out
                         // This ensures the pending question dialog is cleared
                         safeEmit({
                           type: "ask-user-question-timeout",
                           toolUseId: toolUseID,
-                        } as UIMessageChunk)
-                        resolve({ approved: false, message: "Timed out" })
-                      }, 60000)
+                        } as UIMessageChunk);
+                        resolve({ approved: false, message: "Timed out" });
+                      }, 60000);
 
                       pendingToolApprovals.set(toolUseID, {
                         subChatId: input.subChatId,
                         resolve: (d) => {
-                          clearTimeout(timeoutId)
-                          resolve(d)
+                          clearTimeout(timeoutId);
+                          resolve(d);
                         },
-                      })
-                    })
+                      });
+                    });
 
                     // Find the tool part in accumulated parts
                     const askToolPart = parts.find(
-                      (p) => p.toolCallId === toolUseID && p.type === "tool-AskUserQuestion"
-                    )
+                      (p) =>
+                        p.toolCallId === toolUseID &&
+                        p.type === "tool-AskUserQuestion",
+                    );
 
                     if (!response.approved) {
                       // Update the tool part with error result for skipped/denied
-                      const errorMessage = response.message || "Skipped"
+                      const errorMessage = response.message || "Skipped";
                       if (askToolPart) {
-                        askToolPart.result = errorMessage
-                        askToolPart.state = "result"
+                        askToolPart.result = errorMessage;
+                        askToolPart.state = "result";
                       }
                       // Emit result to frontend so it updates in real-time
                       safeEmit({
                         type: "ask-user-question-result",
                         toolUseId: toolUseID,
                         result: errorMessage,
-                      } as UIMessageChunk)
+                      } as UIMessageChunk);
                       return {
                         behavior: "deny",
                         message: errorMessage,
-                      }
+                      };
                     }
 
                     // Update the tool part with answers result for approved
-                    const answers = (response.updatedInput as any)?.answers
-                    const answerResult = { answers }
+                    const answers = (response.updatedInput as any)?.answers;
+                    const answerResult = { answers };
                     if (askToolPart) {
-                      askToolPart.result = answerResult
-                      askToolPart.state = "result"
+                      askToolPart.result = answerResult;
+                      askToolPart.state = "result";
                     }
                     // Emit result to frontend so it updates in real-time
                     safeEmit({
                       type: "ask-user-question-result",
                       toolUseId: toolUseID,
                       result: answerResult,
-                    } as UIMessageChunk)
+                    } as UIMessageChunk);
                     return {
                       behavior: "allow",
                       updatedInput: response.updatedInput,
-                    }
+                    };
                   }
                   return {
                     behavior: "allow",
                     updatedInput: toolInput,
-                  }
+                  };
                 },
                 stderr: (data: string) => {
                   stderrLines.push(data)
@@ -1083,22 +1096,24 @@ export const claudeRouter = router({
                   maxThinkingTokens: input.maxThinkingTokens,
                 }),
               },
-            }
+            };
 
             // 5. Run Claude SDK
-            let stream
+            let stream;
             try {
-              stream = claudeQuery(queryOptions)
+              stream = claudeQuery(queryOptions);
             } catch (queryError) {
               console.error(
                 "[CLAUDE] ✗ Failed to create SDK query:",
                 queryError,
-              )
-              emitError(queryError, "Failed to start Claude query")
-              console.log(`[SD] M:END sub=${subId} reason=query_error n=${chunkCount}`)
-              safeEmit({ type: "finish" } as UIMessageChunk)
-              safeComplete()
-              return
+              );
+              emitError(queryError, "Failed to start Claude query");
+              console.log(
+                `[SD] M:END sub=${subId} reason=query_error n=${chunkCount}`,
+              );
+              safeEmit({ type: "finish" } as UIMessageChunk);
+              safeComplete();
+              return;
             }
 
             let messageCount = 0
@@ -1123,7 +1138,7 @@ export const claudeRouter = router({
                   break
                 }
 
-                messageCount++
+                messageCount++;
 
                 // Extra logging for Ollama to diagnose issues
                 if (isUsingOllama) {
@@ -1158,32 +1173,32 @@ export const claudeRouter = router({
                 }
 
                 // Log raw message for debugging
-                logRawClaudeMessage(input.chatId, msg)
+                logRawClaudeMessage(input.chatId, msg);
 
                 // Check for error messages from SDK (error can be embedded in message payload!)
-                const msgAny = msg as any
+                const msgAny = msg as any;
                 if (msgAny.type === "error" || msgAny.error) {
                   const sdkError =
-                    msgAny.error || msgAny.message || "Unknown SDK error"
-                  lastError = new Error(sdkError)
+                    msgAny.error || msgAny.message || "Unknown SDK error";
+                  lastError = new Error(sdkError);
 
                   // Categorize SDK-level errors
-                  let errorCategory = "SDK_ERROR"
-                  let errorContext = "Claude SDK error"
+                  let errorCategory = "SDK_ERROR";
+                  let errorContext = "Claude SDK error";
 
                   if (
                     sdkError === "authentication_failed" ||
                     sdkError.includes("authentication")
                   ) {
-                    errorCategory = "AUTH_FAILED_SDK"
+                    errorCategory = "AUTH_FAILED_SDK";
                     errorContext =
-                      "Authentication failed - not logged into Claude Code CLI"
+                      "Authentication failed - not logged into Claude Code CLI";
                   } else if (
                     sdkError === "invalid_api_key" ||
                     sdkError.includes("api_key")
                   ) {
-                    errorCategory = "INVALID_API_KEY_SDK"
-                    errorContext = "Invalid API key in Claude Code CLI"
+                    errorCategory = "INVALID_API_KEY_SDK";
+                    errorContext = "Invalid API key in Claude Code CLI";
                   } else if (
                     sdkError === "rate_limit_exceeded" ||
                     sdkError.includes("rate")
@@ -1194,8 +1209,8 @@ export const claudeRouter = router({
                     sdkError === "overloaded" ||
                     sdkError.includes("overload")
                   ) {
-                    errorCategory = "OVERLOADED_SDK"
-                    errorContext = "Claude is overloaded, try again later"
+                    errorCategory = "OVERLOADED_SDK";
+                    errorContext = "Claude is overloaded, try again later";
                   }
 
                   // Emit auth-error for authentication failures, regular error otherwise
@@ -1203,7 +1218,7 @@ export const claudeRouter = router({
                     safeEmit({
                       type: "auth-error",
                       errorText: errorContext,
-                    } as UIMessageChunk)
+                    } as UIMessageChunk);
                   } else {
                     safeEmit({
                       type: "error",
@@ -1214,19 +1229,21 @@ export const claudeRouter = router({
                         sessionId: msgAny.session_id,
                         messageId: msgAny.message?.id,
                       },
-                    } as UIMessageChunk)
+                    } as UIMessageChunk);
                   }
 
-                  console.log(`[SD] M:END sub=${subId} reason=sdk_error cat=${errorCategory} n=${chunkCount}`)
-                  safeEmit({ type: "finish" } as UIMessageChunk)
-                  safeComplete()
-                  return
+                  console.log(
+                    `[SD] M:END sub=${subId} reason=sdk_error cat=${errorCategory} n=${chunkCount}`,
+                  );
+                  safeEmit({ type: "finish" } as UIMessageChunk);
+                  safeComplete();
+                  return;
                 }
 
                 // Track sessionId and uuid for rollback support (available on all messages)
                 if (msgAny.session_id) {
-                  metadata.sessionId = msgAny.session_id
-                  currentSessionId = msgAny.session_id // Share with cleanup
+                  metadata.sessionId = msgAny.session_id;
+                  currentSessionId = msgAny.session_id; // Share with cleanup
                 }
 
                 // Debug: Log system messages from SDK
@@ -1259,35 +1276,44 @@ export const claudeRouter = router({
 
                 // Transform and emit + accumulate
                 for (const chunk of transform(msg)) {
-                  chunkCount++
-                  lastChunkType = chunk.type
+                  chunkCount++;
+                  lastChunkType = chunk.type;
 
                   // Use safeEmit to prevent throws when observer is closed
                   if (!safeEmit(chunk)) {
                     // Observer closed (user clicked Stop), break out of loop
-                    console.log(`[SD] M:EMIT_CLOSED sub=${subId} type=${chunk.type} n=${chunkCount}`)
-                    break
+                    console.log(
+                      `[SD] M:EMIT_CLOSED sub=${subId} type=${chunk.type} n=${chunkCount}`,
+                    );
+                    break;
                   }
 
                   // Accumulate based on chunk type
                   switch (chunk.type) {
                     case "text-delta":
-                      currentText += chunk.delta
-                      break
+                      currentText += chunk.delta;
+                      break;
                     case "text-end":
                       if (currentText.trim()) {
-                        parts.push({ type: "text", text: currentText })
-                        currentText = ""
+                        parts.push({ type: "text", text: currentText });
+                        currentText = "";
                       }
-                      break
+                      break;
                     case "tool-input-available":
                       // DEBUG: Log tool calls
-                      console.log(`[SD] M:TOOL_CALL sub=${subId} toolName="${chunk.toolName}" mode=${input.mode} callId=${chunk.toolCallId}`)
+                      console.log(
+                        `[SD] M:TOOL_CALL sub=${subId} toolName="${chunk.toolName}" mode=${input.mode} callId=${chunk.toolCallId}`,
+                      );
 
                       // Track ExitPlanMode toolCallId so we can stop when it completes
-                      if (input.mode === "plan" && chunk.toolName === "ExitPlanMode") {
-                        console.log(`[SD] M:PLAN_TOOL_DETECTED sub=${subId} callId=${chunk.toolCallId}`)
-                        exitPlanModeToolCallId = chunk.toolCallId
+                      if (
+                        input.mode === "plan" &&
+                        chunk.toolName === "ExitPlanMode"
+                      ) {
+                        console.log(
+                          `[SD] M:PLAN_TOOL_DETECTED sub=${subId} callId=${chunk.toolCallId}`,
+                        );
+                        exitPlanModeToolCallId = chunk.toolCallId;
                       }
 
                       parts.push({
@@ -1296,82 +1322,97 @@ export const claudeRouter = router({
                         toolName: chunk.toolName,
                         input: chunk.input,
                         state: "call",
-                      })
-                      break
+                      });
+                      break;
                     case "tool-output-available":
                       const toolPart = parts.find(
                         (p) =>
                           p.type?.startsWith("tool-") &&
                           p.toolCallId === chunk.toolCallId,
-                      )
+                      );
                       if (toolPart) {
                         toolPart.result = chunk.output
                         toolPart.output = chunk.output // Backwards compatibility for the UI that relies on output field
                         toolPart.state = "result"
 
                         // Notify renderer about file changes for Write/Edit tools
-                        if (toolPart.type === "tool-Write" || toolPart.type === "tool-Edit") {
-                          const filePath = toolPart.input?.file_path
+                        if (
+                          toolPart.type === "tool-Write" ||
+                          toolPart.type === "tool-Edit"
+                        ) {
+                          const filePath = toolPart.input?.file_path;
                           if (filePath) {
-                            const windows = BrowserWindow.getAllWindows()
+                            const windows = BrowserWindow.getAllWindows();
                             for (const win of windows) {
                               win.webContents.send("file-changed", {
                                 filePath,
                                 type: toolPart.type,
-                                subChatId: input.subChatId
-                              })
+                                subChatId: input.subChatId,
+                              });
                             }
                           }
                         }
                       }
                       // Stop streaming after ExitPlanMode completes in plan mode
                       // Match by toolCallId since toolName is undefined in output chunks
-                      if (input.mode === "plan" && exitPlanModeToolCallId && chunk.toolCallId === exitPlanModeToolCallId) {
-                        console.log(`[SD] M:PLAN_STOP sub=${subId} callId=${chunk.toolCallId} n=${chunkCount} parts=${parts.length}`)
-                        planCompleted = true
+                      if (
+                        input.mode === "plan" &&
+                        exitPlanModeToolCallId &&
+                        chunk.toolCallId === exitPlanModeToolCallId
+                      ) {
+                        console.log(
+                          `[SD] M:PLAN_STOP sub=${subId} callId=${chunk.toolCallId} n=${chunkCount} parts=${parts.length}`,
+                        );
+                        planCompleted = true;
                         // Emit finish chunk so Chat hook properly resets its state
-                        console.log(`[SD] M:PLAN_FINISH sub=${subId} - emitting finish chunk`)
-                        safeEmit({ type: "finish" } as UIMessageChunk)
+                        console.log(
+                          `[SD] M:PLAN_FINISH sub=${subId} - emitting finish chunk`,
+                        );
+                        safeEmit({ type: "finish" } as UIMessageChunk);
                         // Abort the Claude process so it doesn't keep running
-                        console.log(`[SD] M:PLAN_ABORT sub=${subId} - aborting claude process`)
-                        abortController.abort()
+                        console.log(
+                          `[SD] M:PLAN_ABORT sub=${subId} - aborting claude process`,
+                        );
+                        abortController.abort();
                       }
-                      break
+                      break;
                     case "message-metadata":
-                      metadata = { ...metadata, ...chunk.messageMetadata }
-                      break
+                      metadata = { ...metadata, ...chunk.messageMetadata };
+                      break;
                     case "system-Compact":
                       // Add system-Compact to parts so it renders in the chat
                       // Find existing part by toolCallId or add new one
                       const existingCompact = parts.find(
-                        (p) => p.type === "system-Compact" && p.toolCallId === chunk.toolCallId
-                      )
+                        (p) =>
+                          p.type === "system-Compact" &&
+                          p.toolCallId === chunk.toolCallId,
+                      );
                       if (existingCompact) {
-                        existingCompact.state = chunk.state
+                        existingCompact.state = chunk.state;
                       } else {
                         parts.push({
                           type: "system-Compact",
                           toolCallId: chunk.toolCallId,
                           state: chunk.state,
-                        })
+                        });
                       }
-                      break
+                      break;
                   }
                   // Break from chunk loop if plan is done
                   if (planCompleted) {
-                    console.log(`[SD] M:PLAN_BREAK_CHUNK sub=${subId}`)
-                    break
+                    console.log(`[SD] M:PLAN_BREAK_CHUNK sub=${subId}`);
+                    break;
                   }
                 }
                 // Break from stream loop if plan is done
                 if (planCompleted) {
-                  console.log(`[SD] M:PLAN_BREAK_STREAM sub=${subId}`)
-                  break
+                  console.log(`[SD] M:PLAN_BREAK_STREAM sub=${subId}`);
+                  break;
                 }
                 // Break from stream loop if observer closed (user clicked Stop)
                 if (!isObservableActive) {
-                  console.log(`[SD] M:OBSERVER_CLOSED_STREAM sub=${subId}`)
-                  break
+                  console.log(`[SD] M:OBSERVER_CLOSED_STREAM sub=${subId}`);
+                  break;
                 }
               }
 
@@ -1403,8 +1444,26 @@ export const claudeRouter = router({
               }
             } catch (streamError) {
               // This catches errors during streaming (like process exit)
-              const err = streamError as Error
-              const stderrOutput = stderrLines.join("\n")
+              const err = streamError as Error;
+              console.error(
+                "[claude] FULL ERROR:",
+                JSON.stringify(
+                  { message: err.message, stack: err.stack, name: err.name },
+                  null,
+                  2,
+                ),
+              );
+              const stderrOutput = stderrLines.join("\n");
+
+              if (isUsingOllama) {
+                console.error(`[Ollama] ===== STREAM ERROR =====`)
+                console.error(`[Ollama] Error message: ${err.message}`)
+                console.error(`[Ollama] Error stack:`, err.stack)
+                console.error(`[Ollama] Messages received before error: ${messageCount}`)
+                if (stderrOutput) {
+                  console.error(`[Ollama] Claude binary stderr:`, stderrOutput)
+                }
+              }
 
               if (isUsingOllama) {
                 console.error(`[Ollama] ===== STREAM ERROR =====`)
@@ -1417,28 +1476,28 @@ export const claudeRouter = router({
               }
 
               // Build detailed error message with category
-              let errorContext = "Claude streaming error"
-              let errorCategory = "UNKNOWN"
+              let errorContext = "Claude streaming error";
+              let errorCategory = "UNKNOWN";
 
               if (err.message?.includes("exited with code")) {
-                errorContext = "Claude Code process crashed"
-                errorCategory = "PROCESS_CRASH"
+                errorContext = "Claude Code process crashed";
+                errorCategory = "PROCESS_CRASH";
               } else if (err.message?.includes("ENOENT")) {
-                errorContext = "Required executable not found in PATH"
-                errorCategory = "EXECUTABLE_NOT_FOUND"
+                errorContext = "Required executable not found in PATH";
+                errorCategory = "EXECUTABLE_NOT_FOUND";
               } else if (
                 err.message?.includes("authentication") ||
                 err.message?.includes("401")
               ) {
-                errorContext = "Authentication failed - check your API key"
-                errorCategory = "AUTH_FAILURE"
+                errorContext = "Authentication failed - check your API key";
+                errorCategory = "AUTH_FAILURE";
               } else if (
                 err.message?.includes("invalid_api_key") ||
                 err.message?.includes("Invalid API Key") ||
                 stderrOutput?.includes("invalid_api_key")
               ) {
-                errorContext = "Invalid API key"
-                errorCategory = "INVALID_API_KEY"
+                errorContext = "Invalid API key";
+                errorCategory = "INVALID_API_KEY";
               } else if (
                 err.message?.includes("rate_limit") ||
                 err.message?.includes("429")
@@ -1450,14 +1509,14 @@ export const claudeRouter = router({
                 err.message?.includes("ECONNREFUSED") ||
                 err.message?.includes("fetch failed")
               ) {
-                errorContext = "Network error - check your connection"
-                errorCategory = "NETWORK_ERROR"
+                errorContext = "Network error - check your connection";
+                errorCategory = "NETWORK_ERROR";
               }
 
               // Track error in Sentry (only if app is ready and Sentry is available)
               if (app.isReady() && app.isPackaged) {
                 try {
-                  const Sentry = await import("@sentry/electron/main")
+                  const Sentry = await import("@sentry/electron/main");
                   Sentry.captureException(err, {
                     tags: {
                       errorCategory,
@@ -1470,7 +1529,7 @@ export const claudeRouter = router({
                       chatId: input.chatId,
                       subChatId: input.subChatId,
                     },
-                  })
+                  });
                 } catch {
                   // Sentry not available or failed to import - ignore
                 }
@@ -1490,13 +1549,15 @@ export const claudeRouter = router({
                     mode: input.mode,
                     stderr: stderrOutput || "(no stderr captured)",
                   },
-                } as UIMessageChunk)
+                } as UIMessageChunk);
               }
 
               // ALWAYS save accumulated parts before returning (even on abort/error)
-              console.log(`[SD] M:CATCH_SAVE sub=${subId} aborted=${abortController.signal.aborted} parts=${parts.length}`)
+              console.log(
+                `[SD] M:CATCH_SAVE sub=${subId} aborted=${abortController.signal.aborted} parts=${parts.length}`,
+              );
               if (currentText.trim()) {
-                parts.push({ type: "text", text: currentText })
+                parts.push({ type: "text", text: currentText });
               }
               if (parts.length > 0) {
                 const assistantMessage = {
@@ -1504,8 +1565,8 @@ export const claudeRouter = router({
                   role: "assistant",
                   parts,
                   metadata,
-                }
-                const finalMessages = [...messagesToSave, assistantMessage]
+                };
+                const finalMessages = [...messagesToSave, assistantMessage];
                 db.update(subChats)
                   .set({
                     messages: JSON.stringify(finalMessages),
@@ -1514,7 +1575,7 @@ export const claudeRouter = router({
                     updatedAt: new Date(),
                   })
                   .where(eq(subChats.id, input.subChatId))
-                  .run()
+                  .run();
                 db.update(chats)
                   .set({ updatedAt: new Date() })
                   .where(eq(chats.id, input.chatId))
@@ -1526,10 +1587,12 @@ export const claudeRouter = router({
                 }
               }
 
-              console.log(`[SD] M:END sub=${subId} reason=stream_error cat=${errorCategory} n=${chunkCount} last=${lastChunkType}`)
-              safeEmit({ type: "finish" } as UIMessageChunk)
-              safeComplete()
-              return
+              console.log(
+                `[SD] M:END sub=${subId} reason=stream_error cat=${errorCategory} n=${chunkCount} last=${lastChunkType}`,
+              );
+              safeEmit({ type: "finish" } as UIMessageChunk);
+              safeComplete();
+              return;
             }
 
             // 6. Check if we got any response
@@ -1537,20 +1600,24 @@ export const claudeRouter = router({
               emitError(
                 new Error("No response received from Claude"),
                 "Empty response",
-              )
-              console.log(`[SD] M:END sub=${subId} reason=no_response n=${chunkCount}`)
-              safeEmit({ type: "finish" } as UIMessageChunk)
-              safeComplete()
-              return
+              );
+              console.log(
+                `[SD] M:END sub=${subId} reason=no_response n=${chunkCount}`,
+              );
+              safeEmit({ type: "finish" } as UIMessageChunk);
+              safeComplete();
+              return;
             }
 
             // 7. Save final messages to DB
             // ALWAYS save accumulated parts, even on abort (so user sees partial responses after reload)
-            console.log(`[SD] M:SAVE sub=${subId} planCompleted=${planCompleted} aborted=${abortController.signal.aborted} parts=${parts.length}`)
+            console.log(
+              `[SD] M:SAVE sub=${subId} planCompleted=${planCompleted} aborted=${abortController.signal.aborted} parts=${parts.length}`,
+            );
 
             // Flush any remaining text
             if (currentText.trim()) {
-              parts.push({ type: "text", text: currentText })
+              parts.push({ type: "text", text: currentText });
             }
 
             if (parts.length > 0) {
@@ -1559,9 +1626,9 @@ export const claudeRouter = router({
                 role: "assistant",
                 parts,
                 metadata,
-              }
+              };
 
-              const finalMessages = [...messagesToSave, assistantMessage]
+              const finalMessages = [...messagesToSave, assistantMessage];
 
               db.update(subChats)
                 .set({
@@ -1571,7 +1638,7 @@ export const claudeRouter = router({
                   updatedAt: new Date(),
                 })
                 .where(eq(subChats.id, input.subChatId))
-                .run()
+                .run();
             } else {
               // No assistant response - just clear streamId
               db.update(subChats)
@@ -1581,14 +1648,14 @@ export const claudeRouter = router({
                   updatedAt: new Date(),
                 })
                 .where(eq(subChats.id, input.subChatId))
-                .run()
+                .run();
             }
 
             // Update parent chat timestamp
             db.update(chats)
               .set({ updatedAt: new Date() })
               .where(eq(chats.id, input.chatId))
-              .run()
+              .run();
 
             // Create snapshot stash for rollback support
             if (historyEnabled && metadata.sdkMessageUuid && input.cwd) {
@@ -1600,36 +1667,40 @@ export const claudeRouter = router({
             console.log(`[SD] M:END sub=${subId} reason=${reason} n=${chunkCount} last=${lastChunkType} t=${duration}s`)
             safeComplete()
           } catch (error) {
-            const duration = ((Date.now() - streamStart) / 1000).toFixed(1)
-            console.log(`[SD] M:END sub=${subId} reason=unexpected_error n=${chunkCount} t=${duration}s`)
-            emitError(error, "Unexpected error")
-            safeEmit({ type: "finish" } as UIMessageChunk)
-            safeComplete()
+            const duration = ((Date.now() - streamStart) / 1000).toFixed(1);
+            console.log(
+              `[SD] M:END sub=${subId} reason=unexpected_error n=${chunkCount} t=${duration}s`,
+            );
+            emitError(error, "Unexpected error");
+            safeEmit({ type: "finish" } as UIMessageChunk);
+            safeComplete();
           } finally {
-            activeSessions.delete(input.subChatId)
+            activeSessions.delete(input.subChatId);
           }
-        })()
+        })();
 
         // Cleanup on unsubscribe
         return () => {
-          console.log(`[SD] M:CLEANUP sub=${subId} sessionId=${currentSessionId || 'none'}`)
-          isObservableActive = false // Prevent emit after unsubscribe
-          abortController.abort()
-          activeSessions.delete(input.subChatId)
-          clearPendingApprovals("Session ended.", input.subChatId)
+          console.log(
+            `[SD] M:CLEANUP sub=${subId} sessionId=${currentSessionId || "none"}`,
+          );
+          isObservableActive = false; // Prevent emit after unsubscribe
+          abortController.abort();
+          activeSessions.delete(input.subChatId);
+          clearPendingApprovals("Session ended.", input.subChatId);
 
           // Save sessionId on abort so conversation can be resumed
           // Clear streamId since we're no longer streaming
-          const db = getDatabase()
+          const db = getDatabase();
           db.update(subChats)
             .set({
               streamId: null,
-              ...(currentSessionId && { sessionId: currentSessionId })
+              ...(currentSessionId && { sessionId: currentSessionId }),
             })
             .where(eq(subChats.id, input.subChatId))
-            .run()
-        }
-      })
+            .run();
+        };
+      });
     }),
 
   /**
@@ -1639,37 +1710,46 @@ export const claudeRouter = router({
   getMcpConfig: publicProcedure
     .input(z.object({ projectPath: z.string() }))
     .query(async ({ input }) => {
-      const claudeJsonPath = path.join(os.homedir(), ".claude.json")
+      const claudeJsonPath = path.join(os.homedir(), ".claude.json");
 
       try {
-        const exists = await fs.stat(claudeJsonPath).then(() => true).catch(() => false)
+        const exists = await fs
+          .stat(claudeJsonPath)
+          .then(() => true)
+          .catch(() => false);
         if (!exists) {
-          return { mcpServers: [], projectPath: input.projectPath }
+          return { mcpServers: [], projectPath: input.projectPath };
         }
 
-        const configContent = await fs.readFile(claudeJsonPath, "utf-8")
-        const config = JSON.parse(configContent)
+        const configContent = await fs.readFile(claudeJsonPath, "utf-8");
+        const config = JSON.parse(configContent);
 
         // Look for project-specific MCP config
-        const projectConfig = config.projects?.[input.projectPath]
+        const projectConfig = config.projects?.[input.projectPath];
 
         if (!projectConfig?.mcpServers) {
-          return { mcpServers: [], projectPath: input.projectPath }
+          return { mcpServers: [], projectPath: input.projectPath };
         }
 
         // Convert to array format with names
-        const mcpServers = Object.entries(projectConfig.mcpServers).map(([name, serverConfig]) => ({
-          name,
-          // Status will be "pending" until SDK actually connects
-          status: "pending" as const,
-          // Include config details for display (command, args, etc)
-          config: serverConfig as Record<string, unknown>,
-        }))
+        const mcpServers = Object.entries(projectConfig.mcpServers).map(
+          ([name, serverConfig]) => ({
+            name,
+            // Status will be "pending" until SDK actually connects
+            status: "pending" as const,
+            // Include config details for display (command, args, etc)
+            config: serverConfig as Record<string, unknown>,
+          }),
+        );
 
-        return { mcpServers, projectPath: input.projectPath }
+        return { mcpServers, projectPath: input.projectPath };
       } catch (error) {
-        console.error("[getMcpConfig] Error reading config:", error)
-        return { mcpServers: [], projectPath: input.projectPath, error: String(error) }
+        console.error("[getMcpConfig] Error reading config:", error);
+        return {
+          mcpServers: [],
+          projectPath: input.projectPath,
+          error: String(error),
+        };
       }
     }),
 
@@ -1679,14 +1759,14 @@ export const claudeRouter = router({
   cancel: publicProcedure
     .input(z.object({ subChatId: z.string() }))
     .mutation(({ input }) => {
-      const controller = activeSessions.get(input.subChatId)
+      const controller = activeSessions.get(input.subChatId);
       if (controller) {
-        controller.abort()
-        activeSessions.delete(input.subChatId)
-        clearPendingApprovals("Session cancelled.", input.subChatId)
-        return { cancelled: true }
+        controller.abort();
+        activeSessions.delete(input.subChatId);
+        clearPendingApprovals("Session cancelled.", input.subChatId);
+        return { cancelled: true };
       }
-      return { cancelled: false }
+      return { cancelled: false };
     }),
 
   /**
@@ -1705,16 +1785,16 @@ export const claudeRouter = router({
       }),
     )
     .mutation(({ input }) => {
-      const pending = pendingToolApprovals.get(input.toolUseId)
+      const pending = pendingToolApprovals.get(input.toolUseId);
       if (!pending) {
-        return { ok: false }
+        return { ok: false };
       }
       pending.resolve({
         approved: input.approved,
         message: input.message,
         updatedInput: input.updatedInput,
-      })
-      pendingToolApprovals.delete(input.toolUseId)
-      return { ok: true }
+      });
+      pendingToolApprovals.delete(input.toolUseId);
+      return { ok: true };
     }),
-})
+});
