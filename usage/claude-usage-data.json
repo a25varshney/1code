@@ -1,0 +1,58 @@
+﻿[
+    {
+        "date":  "2026-01-21",
+        "cacheCreate":  106128,
+        "input":  248,
+        "cacheRead":  721971,
+        "output":  104
+    },
+    {
+        "date":  "2026-01-21",
+        "cacheCreate":  33186,
+        "input":  19,
+        "cacheRead":  21661,
+        "output":  9
+    },
+    {
+        "date":  "2026-01-21",
+        "cacheCreate":  252555,
+        "input":  267,
+        "cacheRead":  660023,
+        "output":  235
+    },
+    {
+        "date":  "2026-01-21",
+        "cacheCreate":  94695,
+        "input":  92,
+        "cacheRead":  255969,
+        "output":  73
+    },
+    {
+        "date":  "2026-01-20",
+        "cacheCreate":  6952,
+        "input":  3,
+        "cacheRead":  13209,
+        "output":  89
+    },
+    {
+        "date":  "2026-01-20",
+        "cacheCreate":  16626,
+        "input":  17,
+        "cacheRead":  140670,
+        "output":  5013
+    },
+    {
+        "date":  "2026-01-20",
+        "cacheCreate":  27808,
+        "input":  12,
+        "cacheRead":  52836,
+        "output":  268
+    },
+    {
+        "date":  "2026-01-20",
+        "cacheCreate":  194934,
+        "input":  289,
+        "cacheRead":  1619519,
+        "output":  12473
+    }
+]
