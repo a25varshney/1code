@@ -1341,7 +1341,7 @@ export function NewChatForm({
                               ) : (
                                 <>
                                   {selectedModel?.name}{" "}
-                                  <span className="text-muted-foreground">4.5</span>
+                                  <span className="text-muted-foreground">{selectedModel?.version}</span>
                                 </>
                               )}
                             </span>
@@ -1382,7 +1382,7 @@ export function NewChatForm({
                                       <>
                                         {model.name}{" "}
                                         <span className="text-muted-foreground">
-                                          4.5
+                                          {model.version}
                                         </span>
                                       </>
                                     )}

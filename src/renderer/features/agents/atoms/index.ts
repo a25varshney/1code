@@ -193,7 +193,8 @@ export const isPlanModeAtom = atomWithStorage<boolean>(
 
 // Model ID to full Claude model string mapping
 export const MODEL_ID_MAP: Record<string, string> = {
-  opus: "opus",
+  "opus-4-6": "opus", // Latest Opus (4.6)
+  opus: "claude-opus-4-5-20251101", // Explicit 4.5 for backwards compatibility
   sonnet: "sonnet",
   haiku: "haiku",
 }

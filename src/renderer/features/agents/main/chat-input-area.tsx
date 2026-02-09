@@ -933,7 +933,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                           ) : (
                             <>
                               {selectedModel?.name}{" "}
-                              <span className="text-muted-foreground">4.5</span>
+                              <span className="text-muted-foreground">{selectedModel?.version}</span>
                             </>
                           )}
                         </span>
@@ -971,7 +971,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                                   <>
                                     {model.name}{" "}
                                     <span className="text-muted-foreground">
-                                      4.5
+                                      {model.version}
                                     </span>
                                   </>
                                 )}
